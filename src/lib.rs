@@ -1,10 +1,15 @@
+use napi::bindgen_prelude::*;
 use napi::module_init;
+use napi::JsObject;
 use napi_derive::napi;
 use std::sync::OnceLock;
 use std::thread::ThreadId;
 
+mod cif;
 mod ffi_type;
 mod library;
+mod marshal;
+mod register;
 
 use library::LibraryHandle;
 
@@ -54,5 +59,14 @@ impl UniffiNativeModule {
     #[napi]
     pub fn close(&mut self) {
         self.handle.take();
+    }
+
+    #[napi]
+    pub fn register(&self, env: Env, definitions: JsObject) -> napi::Result<JsObject> {
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| napi::Error::from_reason("Module is closed"))?;
+        register::register(env, handle, definitions)
     }
 }
