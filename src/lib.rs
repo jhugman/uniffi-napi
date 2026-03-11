@@ -1,8 +1,12 @@
 use napi::module_init;
+use napi_derive::napi;
 use std::sync::OnceLock;
 use std::thread::ThreadId;
 
 mod ffi_type;
+mod library;
+
+use library::LibraryHandle;
 
 static MAIN_THREAD_ID: OnceLock<ThreadId> = OnceLock::new();
 
@@ -18,4 +22,37 @@ pub fn is_main_thread() -> bool {
         .get()
         .map(|id| *id == std::thread::current().id())
         .unwrap_or(false)
+}
+
+#[napi(object)]
+pub struct RustBufferSymbols {
+    pub rustbuffer_alloc: String,
+    pub rustbuffer_free: String,
+    pub rustbuffer_from_bytes: String,
+}
+
+#[napi]
+pub struct UniffiNativeModule {
+    handle: Option<LibraryHandle>,
+}
+
+#[napi]
+impl UniffiNativeModule {
+    #[napi(factory)]
+    pub fn open(path: String, symbols: RustBufferSymbols) -> napi::Result<Self> {
+        let handle = LibraryHandle::open(
+            &path,
+            &symbols.rustbuffer_alloc,
+            &symbols.rustbuffer_free,
+            &symbols.rustbuffer_from_bytes,
+        )?;
+        Ok(Self {
+            handle: Some(handle),
+        })
+    }
+
+    #[napi]
+    pub fn close(&mut self) {
+        self.handle.take();
+    }
 }
