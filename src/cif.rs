@@ -21,7 +21,7 @@ pub fn ffi_type_for(desc: &FfiTypeDesc) -> Type {
         | FfiTypeDesc::Callback(_) => Type::pointer(),
         FfiTypeDesc::Void => Type::void(),
         FfiTypeDesc::RustCallStatus => Type::pointer(), // always passed as &mut
-        FfiTypeDesc::RustBuffer => todo!("RustBuffer struct type - Task 6"),
+        FfiTypeDesc::RustBuffer => Type::structure(vec![Type::u64(), Type::u64(), Type::pointer()]),
         FfiTypeDesc::ForeignBytes => todo!("ForeignBytes struct type"),
         FfiTypeDesc::Struct(_) => todo!("Custom struct type - Task 10"),
     }
