@@ -186,6 +186,57 @@ fn call_ffi_function(
     if has_rust_call_status {
         if let Some(mut js_status) = status_js_obj {
             js_status.set_named_property("code", env.create_int32(rust_call_status.code as i32)?)?;
+
+            // If error, copy error_buf into a Uint8Array and set on js_status
+            if rust_call_status.code != 0 && !rust_call_status.error_buf_data.is_null() {
+                let len = rust_call_status.error_buf_len as usize;
+                let raw_env = env.raw();
+
+                let mut arraybuffer_data: *mut c_void = std::ptr::null_mut();
+                let mut arraybuffer = std::ptr::null_mut();
+                let status_code = unsafe {
+                    napi::sys::napi_create_arraybuffer(raw_env, len, &mut arraybuffer_data, &mut arraybuffer)
+                };
+                if status_code == napi::sys::Status::napi_ok {
+                    if len > 0 {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                rust_call_status.error_buf_data,
+                                arraybuffer_data as *mut u8,
+                                len,
+                            );
+                        }
+                    }
+
+                    let mut typedarray = std::ptr::null_mut();
+                    let status_code = unsafe {
+                        napi::sys::napi_create_typedarray(
+                            raw_env,
+                            1, // napi_uint8_array
+                            len,
+                            arraybuffer,
+                            0,
+                            &mut typedarray,
+                        )
+                    };
+                    if status_code == napi::sys::Status::napi_ok {
+                        let js_uint8array = unsafe { JsUnknown::from_raw(raw_env, typedarray)? };
+                        js_status.set_named_property("errorBuf", js_uint8array)?;
+                    }
+                }
+
+                // Free the error_buf via rustbuffer_free
+                if !rb_free_ptr.is_null() {
+                    let error_rb = RustBufferC {
+                        capacity: rust_call_status.error_buf_capacity,
+                        len: rust_call_status.error_buf_len,
+                        data: rust_call_status.error_buf_data,
+                    };
+                    let free_fn: RustBufferFreeFn = unsafe { std::mem::transmute(rb_free_ptr) };
+                    let mut free_status = RustCallStatusC::default();
+                    unsafe { free_fn(error_rb, &mut free_status as *mut RustCallStatusC) };
+                }
+            }
         }
     }
 
