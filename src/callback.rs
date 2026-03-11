@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 use libffi::low;
 use libffi::middle::{Cif, Type};
-use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, ErrorStrategy};
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Env, NapiValue};
 
 use crate::cif::ffi_type_for;
@@ -102,10 +102,7 @@ unsafe fn trampoline_main_thread(
 }
 
 /// Cross-thread dispatch: read C args into RawCallbackArg values and send via TSF.
-unsafe fn trampoline_cross_thread(
-    args: *const *const c_void,
-    userdata: &TrampolineUserdata,
-) {
+unsafe fn trampoline_cross_thread(args: *const *const c_void, userdata: &TrampolineUserdata) {
     let tsfn = match &userdata.tsfn {
         Some(t) => t,
         None => return, // No TSF available, can't dispatch

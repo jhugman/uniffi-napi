@@ -43,9 +43,9 @@ impl LibraryHandle {
 
     pub fn lookup_symbol(&self, name: &str) -> Result<*const c_void> {
         unsafe {
-            self.lib.symbol::<*const c_void>(name).map_err(|e| {
-                napi::Error::from_reason(format!("Symbol '{name}' not found: {e}"))
-            })
+            self.lib
+                .symbol::<*const c_void>(name)
+                .map_err(|e| napi::Error::from_reason(format!("Symbol '{name}' not found: {e}")))
         }
     }
 }

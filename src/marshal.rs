@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use libffi::middle::{Arg, arg};
+use libffi::middle::{arg, Arg};
 use napi::bindgen_prelude::*;
 use napi::{JsBigInt, JsNumber, JsUnknown, NapiRaw, NapiValue, Result};
 

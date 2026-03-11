@@ -39,7 +39,8 @@ struct RustCallStatusC {
     error_buf_data: *mut u8,
 }
 
-type RustBufferFromBytesFn = unsafe extern "C" fn(ForeignBytesC, *mut RustCallStatusC) -> RustBufferC;
+type RustBufferFromBytesFn =
+    unsafe extern "C" fn(ForeignBytesC, *mut RustCallStatusC) -> RustBufferC;
 type RustBufferFreeFn = unsafe extern "C" fn(RustBufferC, *mut RustCallStatusC);
 
 impl Default for RustCallStatusC {
@@ -69,7 +70,11 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
     let len = names.get_array_length()?;
 
     for i in 0..len {
-        let name: String = names.get_element::<napi::JsString>(i)?.into_utf8()?.as_str()?.to_owned();
+        let name: String = names
+            .get_element::<napi::JsString>(i)?
+            .into_utf8()?
+            .as_str()?
+            .to_owned();
         let func_def: JsObject = functions.get_named_property(&name)?;
 
         // Parse argument types
@@ -148,7 +153,11 @@ fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, 
     let len = names.get_array_length()?;
 
     for i in 0..len {
-        let name: String = names.get_element::<napi::JsString>(i)?.into_utf8()?.as_str()?.to_owned();
+        let name: String = names
+            .get_element::<napi::JsString>(i)?
+            .into_utf8()?
+            .as_str()?
+            .to_owned();
         let cb_def: JsObject = callbacks.get_named_property(&name)?;
 
         // Parse args
@@ -167,7 +176,14 @@ fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, 
         // Parse hasRustCallStatus
         let has_rust_call_status: bool = cb_def.get_named_property("hasRustCallStatus")?;
 
-        map.insert(name, CallbackDef { args, ret, has_rust_call_status });
+        map.insert(
+            name,
+            CallbackDef {
+                args,
+                ret,
+                has_rust_call_status,
+            },
+        );
     }
 
     Ok(map)
@@ -221,12 +237,11 @@ fn call_ffi_function(
                 })?;
 
                 // Get the JS object for this argument
-                let js_obj = unsafe {
-                    JsObject::from_raw(env.raw(), js_val.raw())?
-                };
+                let js_obj = unsafe { JsObject::from_raw(env.raw(), js_val.raw())? };
 
                 // Build the C struct (VTable) from the JS object
-                let struct_ptr = structs::build_vtable_struct(env, struct_def, &js_obj, callback_defs)?;
+                let struct_ptr =
+                    structs::build_vtable_struct(env, struct_def, &js_obj, callback_defs)?;
                 struct_ptrs.push(struct_ptr);
 
                 // Placeholder in boxed_args
@@ -239,14 +254,15 @@ fn call_ffi_function(
                 })?;
 
                 // Get the JS function for creating a ThreadsafeFunction
-                let js_fn = unsafe {
-                    napi::JsFunction::from_raw(env.raw(), js_val.raw())?
-                };
+                let js_fn = unsafe { napi::JsFunction::from_raw(env.raw(), js_val.raw())? };
                 let raw_fn = unsafe { js_val.raw() };
 
                 // Create a ThreadsafeFunction for cross-thread dispatch.
                 // The callback converts RawCallbackArg values to JS values on the main thread.
-                let tsfn: napi::threadsafe_function::ThreadsafeFunction<Vec<RawCallbackArg>, napi::threadsafe_function::ErrorStrategy::Fatal> = js_fn.create_threadsafe_function(
+                let tsfn: napi::threadsafe_function::ThreadsafeFunction<
+                    Vec<RawCallbackArg>,
+                    napi::threadsafe_function::ErrorStrategy::Fatal,
+                > = js_fn.create_threadsafe_function(
                     0,
                     |ctx: napi::threadsafe_function::ThreadSafeCallContext<Vec<RawCallbackArg>>| {
                         let mut js_args: Vec<napi::JsUnknown> = Vec::with_capacity(ctx.value.len());
@@ -277,15 +293,13 @@ fn call_ffi_function(
                 // This is necessary because the callback may be invoked from another
                 // thread after call_ffi_function returns.
                 let userdata_ptr = Box::into_raw(userdata);
-                let userdata_ref: &'static TrampolineUserdata =
-                    unsafe { &*userdata_ptr };
+                let userdata_ref: &'static TrampolineUserdata = unsafe { &*userdata_ptr };
 
                 // Create the closure with 'static lifetime since userdata is leaked.
                 let closure = Closure::new(cb_cif, callback::trampoline_callback, userdata_ref);
 
                 // Extract the function pointer value from the closure.
-                let fn_ptr: *const c_void =
-                    *closure.code_ptr() as *const std::ffi::c_void;
+                let fn_ptr: *const c_void = *closure.code_ptr() as *const std::ffi::c_void;
                 callback_fn_ptrs.push(fn_ptr);
 
                 // Leak the closure too so the function pointer remains valid.
@@ -350,7 +364,8 @@ fn call_ffi_function(
     // Write back RustCallStatus
     if has_rust_call_status {
         if let Some(mut js_status) = status_js_obj {
-            js_status.set_named_property("code", env.create_int32(rust_call_status.code as i32)?)?;
+            js_status
+                .set_named_property("code", env.create_int32(rust_call_status.code as i32)?)?;
 
             // If error, copy error_buf into a Uint8Array and set on js_status
             if rust_call_status.code != 0 && !rust_call_status.error_buf_data.is_null() {
@@ -360,7 +375,12 @@ fn call_ffi_function(
                 let mut arraybuffer_data: *mut c_void = std::ptr::null_mut();
                 let mut arraybuffer = std::ptr::null_mut();
                 let status_code = unsafe {
-                    napi::sys::napi_create_arraybuffer(raw_env, len, &mut arraybuffer_data, &mut arraybuffer)
+                    napi::sys::napi_create_arraybuffer(
+                        raw_env,
+                        len,
+                        &mut arraybuffer_data,
+                        &mut arraybuffer,
+                    )
                 };
                 if status_code == napi::sys::Status::napi_ok {
                     if len > 0 {
@@ -516,7 +536,11 @@ fn js_uint8array_to_rust_buffer(
     let data_ptr = data as *const u8;
     let foreign = ForeignBytesC {
         len: length as i32,
-        data: if length > 0 { data_ptr } else { std::ptr::null() },
+        data: if length > 0 {
+            data_ptr
+        } else {
+            std::ptr::null()
+        },
     };
 
     let mut call_status = RustCallStatusC::default();

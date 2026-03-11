@@ -60,11 +60,15 @@ impl FfiTypeDesc {
             }
             "Reference" => {
                 let inner: JsObject = obj.get_named_property("inner")?;
-                Ok(Self::Reference(Box::new(Self::from_js_object(env, &inner)?)))
+                Ok(Self::Reference(Box::new(Self::from_js_object(
+                    env, &inner,
+                )?)))
             }
             "MutReference" => {
                 let inner: JsObject = obj.get_named_property("inner")?;
-                Ok(Self::MutReference(Box::new(Self::from_js_object(env, &inner)?)))
+                Ok(Self::MutReference(Box::new(Self::from_js_object(
+                    env, &inner,
+                )?)))
             }
             other => Err(napi::Error::from_reason(format!(
                 "Unknown FfiType tag: {other}"

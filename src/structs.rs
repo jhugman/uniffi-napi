@@ -92,7 +92,8 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
 
     // Get the JS function from the persistent reference
     let mut raw_fn: napi::sys::napi_value = std::ptr::null_mut();
-    let status = napi::sys::napi_get_reference_value(userdata.raw_env, userdata.fn_ref, &mut raw_fn);
+    let status =
+        napi::sys::napi_get_reference_value(userdata.raw_env, userdata.fn_ref, &mut raw_fn);
     if status != napi::sys::Status::napi_ok || raw_fn.is_null() {
         return;
     }
@@ -151,8 +152,7 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
         // Read back the code from the last JS arg (the status object)
         // The JS function may have modified callStatus.code
         if let Some(js_status_unknown) = js_args.last() {
-            if let Ok(js_status_obj) =
-                JsObject::from_raw(userdata.raw_env, js_status_unknown.raw())
+            if let Ok(js_status_obj) = JsObject::from_raw(userdata.raw_env, js_status_unknown.raw())
             {
                 if let Ok(code_val) = js_status_obj.get_named_property::<i32>("code") {
                     (*status_ptr).code = code_val as i8;
@@ -365,8 +365,7 @@ pub fn build_vtable_struct(
 
                 // Build CIF for this callback:
                 // declared args + optional RustCallStatus pointer -> ret type
-                let mut cif_arg_types: Vec<Type> =
-                    cb_def.args.iter().map(ffi_type_for).collect();
+                let mut cif_arg_types: Vec<Type> = cb_def.args.iter().map(ffi_type_for).collect();
                 if cb_def.has_rust_call_status {
                     cif_arg_types.push(Type::pointer());
                 }
@@ -384,16 +383,13 @@ pub fn build_vtable_struct(
 
                 // Leak userdata for stable address
                 let userdata_ptr = Box::into_raw(userdata);
-                let userdata_ref: &'static VTableTrampolineUserdata =
-                    unsafe { &*userdata_ptr };
+                let userdata_ref: &'static VTableTrampolineUserdata = unsafe { &*userdata_ptr };
 
                 // Create closure
-                let closure =
-                    Closure::new(cif, vtable_trampoline_callback, userdata_ref);
+                let closure = Closure::new(cif, vtable_trampoline_callback, userdata_ref);
 
                 // Extract function pointer
-                let fn_ptr: *const c_void =
-                    *closure.code_ptr() as *const std::ffi::c_void;
+                let fn_ptr: *const c_void = *closure.code_ptr() as *const std::ffi::c_void;
 
                 // Leak the closure so the function pointer stays valid
                 std::mem::forget(closure);
