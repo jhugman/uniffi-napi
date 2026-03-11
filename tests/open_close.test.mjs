@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { join } from 'node:path';
-import { UniffiNativeModule } from '../index.js';
+import lib from '../lib.js';
+const { UniffiNativeModule } = lib;
 
 const LIB_PATH = join(import.meta.dirname, '..', 'test_lib', 'target', 'debug',
   process.platform === 'darwin' ? 'libuniffi_napi_test_lib.dylib' : 'libuniffi_napi_test_lib.so'
