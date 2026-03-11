@@ -190,3 +190,40 @@ pub extern "C" fn uniffi_test_fn_call_callback_from_thread(
         cb(handle, value);
     });
 }
+
+// --- VTable test ---
+
+#[repr(C)]
+pub struct TestVTable {
+    pub get_value: extern "C" fn(u64, &mut RustCallStatus) -> i32,
+    pub free: extern "C" fn(u64, &mut RustCallStatus),
+}
+
+static mut STORED_VTABLE: Option<TestVTable> = None;
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_init_vtable(vtable: &TestVTable, status: &mut RustCallStatus) {
+    status.code = 0;
+    unsafe {
+        STORED_VTABLE = Some(TestVTable {
+            get_value: vtable.get_value,
+            free: vtable.free,
+        });
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_use_vtable(handle: u64, status: &mut RustCallStatus) -> i32 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vtable) = STORED_VTABLE {
+            let mut cb_status = RustCallStatus {
+                code: 0,
+                error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
+            };
+            (vtable.get_value)(handle, &mut cb_status)
+        } else {
+            -1
+        }
+    }
+}

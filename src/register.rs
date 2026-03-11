@@ -11,6 +11,7 @@ use crate::cif::ffi_type_for;
 use crate::ffi_type::FfiTypeDesc;
 use crate::library::LibraryHandle;
 use crate::marshal;
+use crate::structs;
 
 /// C layout of RustBuffer { capacity: u64, len: u64, data: *mut u8 }
 #[repr(C)]
@@ -57,6 +58,10 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
     let callback_defs = parse_callbacks(&env, &definitions)?;
     let callback_defs = Arc::new(callback_defs);
 
+    // Parse struct definitions if present
+    let struct_defs = structs::parse_structs(&env, &definitions)?;
+    let struct_defs = Arc::new(struct_defs);
+
     let functions: JsObject = definitions.get_named_property("functions")?;
     let mut result = env.create_object()?;
 
@@ -100,6 +105,7 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
         let arg_types = Arc::new(arg_types);
         let ret_type_clone = ret_type.clone();
         let cb_defs = callback_defs.clone();
+        let st_defs = struct_defs.clone();
 
         // Capture rustbuffer function pointers for RustBuffer arg/ret handling
         let rb_from_bytes_ptr = handle.rustbuffer_from_bytes;
@@ -117,6 +123,7 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
                 rb_from_bytes_ptr,
                 rb_free_ptr,
                 &cb_defs,
+                &st_defs,
             )
         })?;
 
@@ -177,6 +184,7 @@ fn call_ffi_function(
     rb_from_bytes_ptr: *const c_void,
     rb_free_ptr: *const c_void,
     callback_defs: &HashMap<String, CallbackDef>,
+    struct_defs: &HashMap<String, structs::StructDef>,
 ) -> Result<JsUnknown> {
     let declared_arg_count = arg_types.len();
 
@@ -188,6 +196,9 @@ fn call_ffi_function(
     // The actual function pointer values, stored separately so we can borrow them for ffi args.
     let mut callback_fn_ptrs: Vec<*const c_void> = Vec::new();
 
+    // Storage for struct (VTable) pointers passed by reference.
+    let mut struct_ptrs: Vec<*const c_void> = Vec::new();
+
     // Marshal JS arguments to boxed Rust values
     let mut boxed_args: Vec<Box<dyn std::any::Any>> = Vec::with_capacity(declared_arg_count);
     for (i, desc) in arg_types.iter().enumerate() {
@@ -197,6 +208,28 @@ fn call_ffi_function(
                 // Convert Uint8Array -> RustBufferC via rustbuffer_from_bytes
                 let rust_buffer = js_uint8array_to_rust_buffer(env, js_val, rb_from_bytes_ptr)?;
                 boxed_args.push(Box::new(rust_buffer));
+            }
+            FfiTypeDesc::Reference(inner) if matches!(inner.as_ref(), FfiTypeDesc::Struct(_)) => {
+                // Reference(Struct("Name")) — build a VTable struct from a JS object
+                let struct_name = match inner.as_ref() {
+                    FfiTypeDesc::Struct(name) => name,
+                    _ => unreachable!(),
+                };
+                let struct_def = struct_defs.get(struct_name).ok_or_else(|| {
+                    napi::Error::from_reason(format!("Unknown struct: {}", struct_name))
+                })?;
+
+                // Get the JS object for this argument
+                let js_obj = unsafe {
+                    JsObject::from_raw(env.raw(), js_val.raw())?
+                };
+
+                // Build the C struct (VTable) from the JS object
+                let struct_ptr = structs::build_vtable_struct(env, struct_def, &js_obj, callback_defs)?;
+                struct_ptrs.push(struct_ptr);
+
+                // Placeholder in boxed_args
+                boxed_args.push(Box::new(()));
             }
             FfiTypeDesc::Callback(cb_name) => {
                 // Look up callback definition
@@ -271,6 +304,7 @@ fn call_ffi_function(
     // Build libffi Arg references
     let mut ffi_args: Vec<Arg> = Vec::with_capacity(declared_arg_count + 1);
     let mut cb_ptr_idx = 0;
+    let mut struct_ptr_idx = 0;
     for (i, desc) in arg_types.iter().enumerate() {
         match desc {
             FfiTypeDesc::RustBuffer => {
@@ -279,6 +313,10 @@ fn call_ffi_function(
             FfiTypeDesc::Callback(_) => {
                 ffi_args.push(arg(&callback_fn_ptrs[cb_ptr_idx]));
                 cb_ptr_idx += 1;
+            }
+            FfiTypeDesc::Reference(inner) if matches!(inner.as_ref(), FfiTypeDesc::Struct(_)) => {
+                ffi_args.push(arg(&struct_ptrs[struct_ptr_idx]));
+                struct_ptr_idx += 1;
             }
             _ => {
                 ffi_args.push(marshal::boxed_to_arg(desc, boxed_args[i].as_ref()));

@@ -51,3 +51,58 @@ test('callback: same-thread invocation', () => {
   assert.strictEqual(receivedValue, 7);
   lib.close();
 });
+
+test('VTable: register struct with callbacks, call through', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    structs: {
+      TestVTable: [
+        { name: 'get_value', type: FfiType.Callback('vtable_get_value') },
+        { name: 'free', type: FfiType.Callback('vtable_free') },
+      ],
+    },
+    callbacks: {
+      vtable_get_value: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Int32,
+        hasRustCallStatus: true,
+      },
+      vtable_free: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+    },
+    functions: {
+      uniffi_test_fn_init_vtable: {
+        args: [FfiType.Reference(FfiType.Struct('TestVTable'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_use_vtable: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Int32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  // Register VTable with JS callbacks
+  const status1 = { code: 0 };
+  nm.uniffi_test_fn_init_vtable({
+    get_value: (handle, callStatus) => {
+      callStatus.code = 0;
+      return Number(handle) * 10;
+    },
+    free: (handle, callStatus) => {
+      callStatus.code = 0;
+    },
+  }, status1);
+  assert.strictEqual(status1.code, 0);
+
+  // Call through the VTable
+  const status2 = { code: 0 };
+  const result = nm.uniffi_test_fn_use_vtable(7n, status2);
+  assert.strictEqual(result, 70);
+  lib.close();
+});

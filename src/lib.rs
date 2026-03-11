@@ -11,6 +11,7 @@ mod ffi_type;
 mod library;
 mod marshal;
 mod register;
+mod structs;
 
 use library::LibraryHandle;
 
