@@ -5,6 +5,7 @@ use napi_derive::napi;
 use std::sync::OnceLock;
 use std::thread::ThreadId;
 
+mod callback;
 mod cif;
 mod ffi_type;
 mod library;

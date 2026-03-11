@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use libffi::middle::{arg, Arg, Cif, CodePtr};
+use libffi::middle::{arg, Arg, Cif, Closure, CodePtr};
 use napi::bindgen_prelude::*;
 use napi::{JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
+use crate::callback::{self, CallbackDef, TrampolineUserdata};
 use crate::cif::ffi_type_for;
 use crate::ffi_type::FfiTypeDesc;
 use crate::library::LibraryHandle;
@@ -51,6 +53,10 @@ impl Default for RustCallStatusC {
 }
 
 pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Result<JsObject> {
+    // Parse callback definitions if present
+    let callback_defs = parse_callbacks(&env, &definitions)?;
+    let callback_defs = Arc::new(callback_defs);
+
     let functions: JsObject = definitions.get_named_property("functions")?;
     let mut result = env.create_object()?;
 
@@ -93,6 +99,7 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
         let cif = Arc::new(cif);
         let arg_types = Arc::new(arg_types);
         let ret_type_clone = ret_type.clone();
+        let cb_defs = callback_defs.clone();
 
         // Capture rustbuffer function pointers for RustBuffer arg/ret handling
         let rb_from_bytes_ptr = handle.rustbuffer_from_bytes;
@@ -109,6 +116,7 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
                 has_rust_call_status,
                 rb_from_bytes_ptr,
                 rb_free_ptr,
+                &cb_defs,
             )
         })?;
 
@@ -116,6 +124,46 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
     }
 
     Ok(result)
+}
+
+/// Parse the `callbacks` map from JS definitions into a HashMap of CallbackDefs.
+fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, CallbackDef>> {
+    let mut map = HashMap::new();
+
+    // callbacks is optional
+    let has_callbacks: bool = definitions.has_named_property("callbacks")?;
+    if !has_callbacks {
+        return Ok(map);
+    }
+
+    let callbacks: JsObject = definitions.get_named_property("callbacks")?;
+    let names = callbacks.get_property_names()?;
+    let len = names.get_array_length()?;
+
+    for i in 0..len {
+        let name: String = names.get_element::<napi::JsString>(i)?.into_utf8()?.as_str()?.to_owned();
+        let cb_def: JsObject = callbacks.get_named_property(&name)?;
+
+        // Parse args
+        let args_arr: JsObject = cb_def.get_named_property("args")?;
+        let args_len = args_arr.get_array_length()?;
+        let mut args = Vec::with_capacity(args_len as usize);
+        for j in 0..args_len {
+            let arg_obj: JsObject = args_arr.get_element(j)?;
+            args.push(FfiTypeDesc::from_js_object(env, &arg_obj)?);
+        }
+
+        // Parse ret
+        let ret_obj: JsObject = cb_def.get_named_property("ret")?;
+        let ret = FfiTypeDesc::from_js_object(env, &ret_obj)?;
+
+        // Parse hasRustCallStatus
+        let has_rust_call_status: bool = cb_def.get_named_property("hasRustCallStatus")?;
+
+        map.insert(name, CallbackDef { args, ret, has_rust_call_status });
+    }
+
+    Ok(map)
 }
 
 fn call_ffi_function(
@@ -128,8 +176,17 @@ fn call_ffi_function(
     has_rust_call_status: bool,
     rb_from_bytes_ptr: *const c_void,
     rb_free_ptr: *const c_void,
+    callback_defs: &HashMap<String, CallbackDef>,
 ) -> Result<JsUnknown> {
     let declared_arg_count = arg_types.len();
+
+    // Storage for callback closures that must live until after ffi_call.
+    // We use Box<TrampolineUserdata> so the userdata has a stable address,
+    // then create a Closure that borrows from it.
+    // _callback_keepalive keeps both alive until this function returns.
+    let mut _callback_keepalive: Vec<(Box<TrampolineUserdata>, Closure<'_>)> = Vec::new();
+    // The actual function pointer values, stored separately so we can borrow them for ffi args.
+    let mut callback_fn_ptrs: Vec<*const c_void> = Vec::new();
 
     // Marshal JS arguments to boxed Rust values
     let mut boxed_args: Vec<Box<dyn std::any::Any>> = Vec::with_capacity(declared_arg_count);
@@ -141,6 +198,46 @@ fn call_ffi_function(
                 let rust_buffer = js_uint8array_to_rust_buffer(env, js_val, rb_from_bytes_ptr)?;
                 boxed_args.push(Box::new(rust_buffer));
             }
+            FfiTypeDesc::Callback(cb_name) => {
+                // Look up callback definition
+                let cb_def = callback_defs.get(cb_name).ok_or_else(|| {
+                    napi::Error::from_reason(format!("Unknown callback: {}", cb_name))
+                })?;
+
+                // Get the raw JS function value
+                let raw_fn = unsafe { js_val.raw() };
+
+                // Create userdata on the heap with a stable address
+                let userdata = Box::new(TrampolineUserdata {
+                    raw_env: env.raw(),
+                    raw_fn,
+                    arg_types: cb_def.args.clone(),
+                });
+
+                // Build the callback CIF
+                let cb_cif = callback::build_callback_cif(cb_def);
+
+                // Create the closure. Safety: userdata lives in the Box which is
+                // moved into _callback_keepalive and stays alive until after ffi_call.
+                // We extend the lifetime with an unsafe cast because the Box won't move
+                // in memory (it's heap-allocated).
+                let userdata_ref: &TrampolineUserdata =
+                    unsafe { &*(userdata.as_ref() as *const TrampolineUserdata) };
+                let closure = Closure::new(cb_cif, callback::trampoline_callback, userdata_ref);
+
+                // Extract the function pointer value from the closure.
+                // code_ptr() returns &(unsafe extern "C" fn()), which is a reference to
+                // the fn pointer stored inside the Closure. We need the pointer value itself.
+                let fn_ptr: *const c_void =
+                    unsafe { std::mem::transmute::<unsafe extern "C" fn(), *const c_void>(*closure.code_ptr()) };
+                callback_fn_ptrs.push(fn_ptr);
+
+                // Keep both alive
+                _callback_keepalive.push((userdata, closure));
+
+                // Placeholder for boxed_args (not used for callbacks)
+                boxed_args.push(Box::new(()));
+            }
             _ => {
                 boxed_args.push(marshal::js_to_boxed(env, desc, js_val)?);
             }
@@ -149,10 +246,15 @@ fn call_ffi_function(
 
     // Build libffi Arg references
     let mut ffi_args: Vec<Arg> = Vec::with_capacity(declared_arg_count + 1);
+    let mut cb_ptr_idx = 0;
     for (i, desc) in arg_types.iter().enumerate() {
         match desc {
             FfiTypeDesc::RustBuffer => {
                 ffi_args.push(arg(boxed_args[i].downcast_ref::<RustBufferC>().unwrap()));
+            }
+            FfiTypeDesc::Callback(_) => {
+                ffi_args.push(arg(&callback_fn_ptrs[cb_ptr_idx]));
+                cb_ptr_idx += 1;
             }
             _ => {
                 ffi_args.push(marshal::boxed_to_arg(desc, boxed_args[i].as_ref()));
