@@ -4,6 +4,7 @@ use napi::{JsObject, Result};
 /// Mirrors uniffi_bindgen's FfiType enum.
 /// Parsed from tagged JS objects like { tag: 'Int32' } or { tag: 'Callback', name: 'cb_name' }.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum FfiTypeDesc {
     UInt8,
     Int8,
@@ -29,6 +30,7 @@ pub enum FfiTypeDesc {
 
 impl FfiTypeDesc {
     /// Parse from a JS object with { tag: string, ...params }.
+    #[allow(clippy::only_used_in_recursion)]
     pub fn from_js_object(env: &Env, obj: &JsObject) -> Result<Self> {
         let tag: String = obj.get_named_property::<String>("tag")?;
         match tag.as_str() {

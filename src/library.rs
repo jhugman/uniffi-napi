@@ -3,6 +3,7 @@ use napi::Result;
 use std::ffi::c_void;
 
 /// Holds a dlopen handle and pre-resolved rustbuffer management symbols.
+#[allow(dead_code)]
 pub struct LibraryHandle {
     pub lib: Library,
     pub rustbuffer_alloc: *const c_void,

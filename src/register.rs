@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use libffi::middle::{arg, Arg, Cif, Closure, CodePtr};
 use napi::bindgen_prelude::*;
@@ -56,11 +56,11 @@ impl Default for RustCallStatusC {
 pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Result<JsObject> {
     // Parse callback definitions if present
     let callback_defs = parse_callbacks(&env, &definitions)?;
-    let callback_defs = Arc::new(callback_defs);
+    let callback_defs = Rc::new(callback_defs);
 
     // Parse struct definitions if present
     let struct_defs = structs::parse_structs(&env, &definitions)?;
-    let struct_defs = Arc::new(struct_defs);
+    let struct_defs = Rc::new(struct_defs);
 
     let functions: JsObject = definitions.get_named_property("functions")?;
     let mut result = env.create_object()?;
@@ -100,9 +100,9 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
         let cif_ret_type = ffi_type_for(&ret_type);
         let cif = Cif::new(cif_arg_types, cif_ret_type);
 
-        // Wrap in Arc so the closure can own it
-        let cif = Arc::new(cif);
-        let arg_types = Arc::new(arg_types);
+        // Wrap in Rc so the closure can own it (single-threaded napi context)
+        let cif = std::rc::Rc::new(cif);
+        let arg_types = Rc::new(arg_types);
         let ret_type_clone = ret_type.clone();
         let cb_defs = callback_defs.clone();
         let st_defs = struct_defs.clone();
@@ -173,6 +173,7 @@ fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, 
     Ok(map)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn call_ffi_function(
     env: &Env,
     ctx: &napi::CallContext<'_>,
@@ -284,7 +285,7 @@ fn call_ffi_function(
 
                 // Extract the function pointer value from the closure.
                 let fn_ptr: *const c_void =
-                    unsafe { std::mem::transmute::<unsafe extern "C" fn(), *const c_void>(*closure.code_ptr()) };
+                    *closure.code_ptr() as *const std::ffi::c_void;
                 callback_fn_ptrs.push(fn_ptr);
 
                 // Leak the closure too so the function pointer remains valid.
@@ -326,7 +327,7 @@ fn call_ffi_function(
 
     // Handle RustCallStatus
     let mut rust_call_status = RustCallStatusC::default();
-    let mut status_ptr: *mut RustCallStatusC = std::ptr::null_mut();
+    let status_ptr: *mut RustCallStatusC;
     let mut status_js_obj: Option<JsObject> = None;
 
     if has_rust_call_status {

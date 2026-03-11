@@ -109,7 +109,7 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
 
     // Convert declared args to JS
     for (i, desc) in userdata.arg_types.iter().enumerate() {
-        let arg_ptr = *args.offset(i as isize);
+        let arg_ptr = *args.add(i);
         let js_val = match c_arg_to_js_vtable(&env, desc, arg_ptr) {
             Ok(v) => v,
             Err(_) => return,
@@ -121,7 +121,7 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
     // Create a JS { code: number } object and pass it to the JS function.
     let mut status_ptr: *mut RustCallStatusForVTable = std::ptr::null_mut();
     if userdata.has_rust_call_status {
-        let rcs_arg_ptr = *args.offset(declared_count as isize);
+        let rcs_arg_ptr = *args.add(declared_count);
         status_ptr = *(rcs_arg_ptr as *const *mut RustCallStatusForVTable);
 
         let code = if !status_ptr.is_null() {
@@ -392,11 +392,8 @@ pub fn build_vtable_struct(
                     Closure::new(cif, vtable_trampoline_callback, userdata_ref);
 
                 // Extract function pointer
-                let fn_ptr: *const c_void = unsafe {
-                    std::mem::transmute::<unsafe extern "C" fn(), *const c_void>(
-                        *closure.code_ptr(),
-                    )
-                };
+                let fn_ptr: *const c_void =
+                    *closure.code_ptr() as *const std::ffi::c_void;
 
                 // Leak the closure so the function pointer stays valid
                 std::mem::forget(closure);
