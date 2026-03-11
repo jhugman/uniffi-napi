@@ -6,7 +6,7 @@ use libffi::middle::{arg, Arg, Cif, Closure, CodePtr};
 use napi::bindgen_prelude::*;
 use napi::{JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
-use crate::callback::{self, CallbackDef, TrampolineUserdata};
+use crate::callback::{self, raw_arg_to_js, CallbackDef, RawCallbackArg, TrampolineUserdata};
 use crate::cif::ffi_type_for;
 use crate::ffi_type::FfiTypeDesc;
 use crate::library::LibraryHandle;
@@ -204,36 +204,60 @@ fn call_ffi_function(
                     napi::Error::from_reason(format!("Unknown callback: {}", cb_name))
                 })?;
 
-                // Get the raw JS function value
+                // Get the JS function for creating a ThreadsafeFunction
+                let js_fn = unsafe {
+                    napi::JsFunction::from_raw(env.raw(), js_val.raw())?
+                };
                 let raw_fn = unsafe { js_val.raw() };
+
+                // Create a ThreadsafeFunction for cross-thread dispatch.
+                // The callback converts RawCallbackArg values to JS values on the main thread.
+                let tsfn: napi::threadsafe_function::ThreadsafeFunction<Vec<RawCallbackArg>, napi::threadsafe_function::ErrorStrategy::Fatal> = js_fn.create_threadsafe_function(
+                    0,
+                    |ctx: napi::threadsafe_function::ThreadSafeCallContext<Vec<RawCallbackArg>>| {
+                        let mut js_args: Vec<napi::JsUnknown> = Vec::with_capacity(ctx.value.len());
+                        for raw_arg in &ctx.value {
+                            js_args.push(raw_arg_to_js(&ctx.env, raw_arg)?);
+                        }
+                        Ok(js_args)
+                    },
+                )?;
+
+                // Unref the TSF so it doesn't keep the Node.js event loop alive.
+                // The TSF will still work when called, but won't prevent process exit.
+                let mut tsfn = tsfn;
+                tsfn.unref(env)?;
 
                 // Create userdata on the heap with a stable address
                 let userdata = Box::new(TrampolineUserdata {
                     raw_env: env.raw(),
                     raw_fn,
                     arg_types: cb_def.args.clone(),
+                    tsfn: Some(tsfn),
                 });
 
                 // Build the callback CIF
                 let cb_cif = callback::build_callback_cif(cb_def);
 
-                // Create the closure. Safety: userdata lives in the Box which is
-                // moved into _callback_keepalive and stays alive until after ffi_call.
-                // We extend the lifetime with an unsafe cast because the Box won't move
-                // in memory (it's heap-allocated).
-                let userdata_ref: &TrampolineUserdata =
-                    unsafe { &*(userdata.as_ref() as *const TrampolineUserdata) };
+                // Leak the userdata so it survives beyond this function call.
+                // This is necessary because the callback may be invoked from another
+                // thread after call_ffi_function returns.
+                let userdata_ptr = Box::into_raw(userdata);
+                let userdata_ref: &'static TrampolineUserdata =
+                    unsafe { &*userdata_ptr };
+
+                // Create the closure with 'static lifetime since userdata is leaked.
                 let closure = Closure::new(cb_cif, callback::trampoline_callback, userdata_ref);
 
                 // Extract the function pointer value from the closure.
-                // code_ptr() returns &(unsafe extern "C" fn()), which is a reference to
-                // the fn pointer stored inside the Closure. We need the pointer value itself.
                 let fn_ptr: *const c_void =
                     unsafe { std::mem::transmute::<unsafe extern "C" fn(), *const c_void>(*closure.code_ptr()) };
                 callback_fn_ptrs.push(fn_ptr);
 
-                // Keep both alive
-                _callback_keepalive.push((userdata, closure));
+                // Leak the closure too so the function pointer remains valid.
+                // For cross-thread callbacks, we can't know when the callback will
+                // no longer be called, so we must keep it alive indefinitely.
+                std::mem::forget(closure);
 
                 // Placeholder for boxed_args (not used for callbacks)
                 boxed_args.push(Box::new(()));
