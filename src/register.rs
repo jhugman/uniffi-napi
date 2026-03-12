@@ -8,51 +8,13 @@ use napi::{JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::callback::{self, raw_arg_to_js, CallbackDef, RawCallbackArg, TrampolineUserdata};
 use crate::cif::ffi_type_for;
+use crate::ffi_c_types::{
+    ForeignBytesC, RustBufferC, RustBufferFreeFn, RustBufferFromBytesFn, RustCallStatusC,
+};
 use crate::ffi_type::FfiTypeDesc;
 use crate::library::LibraryHandle;
 use crate::marshal;
 use crate::structs;
-
-/// C layout of RustBuffer { capacity: u64, len: u64, data: *mut u8 }
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct RustBufferC {
-    pub capacity: u64,
-    pub len: u64,
-    pub data: *mut u8,
-}
-
-/// C layout of ForeignBytes { len: i32, data: *const u8 }
-#[repr(C)]
-struct ForeignBytesC {
-    len: i32,
-    data: *const u8,
-}
-
-/// C layout of RustCallStatus, matching the test_lib definition.
-#[repr(C)]
-struct RustCallStatusC {
-    code: i8,
-    // RustBuffer: capacity, len, data
-    error_buf_capacity: u64,
-    error_buf_len: u64,
-    error_buf_data: *mut u8,
-}
-
-type RustBufferFromBytesFn =
-    unsafe extern "C" fn(ForeignBytesC, *mut RustCallStatusC) -> RustBufferC;
-type RustBufferFreeFn = unsafe extern "C" fn(RustBufferC, *mut RustCallStatusC);
-
-impl Default for RustCallStatusC {
-    fn default() -> Self {
-        Self {
-            code: 0,
-            error_buf_capacity: 0,
-            error_buf_len: 0,
-            error_buf_data: std::ptr::null_mut(),
-        }
-    }
-}
 
 /// Resolve RustBuffer management symbols from the `symbols` property of the definitions object.
 fn resolve_rustbuffer_symbols(

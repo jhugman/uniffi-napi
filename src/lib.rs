@@ -7,6 +7,7 @@ use std::thread::ThreadId;
 
 mod callback;
 mod cif;
+mod ffi_c_types;
 mod ffi_type;
 mod library;
 mod marshal;
