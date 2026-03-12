@@ -54,6 +54,43 @@ test('callback: same-thread invocation', () => {
   assert.strictEqual(receivedValue, 7);
 });
 
+test('callback: receives RustBuffer arg as Uint8Array (same-thread)', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {
+      buffer_callback: {
+        args: [FfiType.UInt64, FfiType.RustBuffer],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+    },
+    functions: {
+      uniffi_test_fn_call_callback_with_buffer: {
+        args: [FfiType.Callback('buffer_callback'), FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  let receivedHandle = null;
+  let receivedData = null;
+  const callback = (handle, data) => {
+    receivedHandle = handle;
+    receivedData = data;
+  };
+
+  const status = { code: 0 };
+  nm.uniffi_test_fn_call_callback_with_buffer(callback, 42n, status);
+
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(receivedHandle, 42n);
+  assert.ok(receivedData instanceof Uint8Array);
+  assert.deepStrictEqual(receivedData, new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]));
+});
+
 test('VTable: register struct with callbacks, call through', () => {
   const lib = openLib();
   const nm = lib.register({

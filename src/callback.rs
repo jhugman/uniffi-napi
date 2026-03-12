@@ -6,6 +6,7 @@ use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFun
 use napi::{Env, NapiRaw, NapiValue};
 
 use crate::cif::ffi_type_for;
+use crate::ffi_c_types::{RustBufferC, RustBufferFreeFn, RustCallStatusC};
 use crate::ffi_type::FfiTypeDesc;
 use crate::is_main_thread;
 
@@ -94,7 +95,7 @@ unsafe fn trampoline_main_thread(
     let mut js_args: Vec<napi::JsUnknown> = Vec::with_capacity(arg_count);
     for (i, desc) in userdata.arg_types.iter().enumerate() {
         let arg_ptr = *args.add(i);
-        let js_val = match c_arg_to_js(&env, desc, arg_ptr) {
+        let js_val = match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) {
             Ok(v) => v,
             Err(_) => return,
         };
@@ -222,6 +223,7 @@ pub unsafe fn c_arg_to_js(
     env: &Env,
     desc: &FfiTypeDesc,
     arg_ptr: *const c_void,
+    rb_free_ptr: *const c_void,
 ) -> napi::Result<napi::JsUnknown> {
     match desc {
         FfiTypeDesc::UInt8 => {
@@ -263,6 +265,49 @@ pub unsafe fn c_arg_to_js(
         FfiTypeDesc::Float64 => {
             let v = *(arg_ptr as *const f64);
             Ok(env.create_double(v)?.into_unknown())
+        }
+        FfiTypeDesc::RustBuffer => {
+            let rb = *(arg_ptr as *const RustBufferC);
+            let len = rb.len as usize;
+            let raw_env = env.raw();
+
+            // Create ArrayBuffer and copy data
+            let mut arraybuffer_data: *mut c_void = std::ptr::null_mut();
+            let mut arraybuffer = std::ptr::null_mut();
+            let status = napi::sys::napi_create_arraybuffer(
+                raw_env,
+                len,
+                &mut arraybuffer_data,
+                &mut arraybuffer,
+            );
+            if status != napi::sys::Status::napi_ok {
+                return Err(napi::Error::from_reason(
+                    "Failed to create ArrayBuffer for callback RustBuffer arg",
+                ));
+            }
+            if len > 0 && !rb.data.is_null() {
+                std::ptr::copy_nonoverlapping(rb.data, arraybuffer_data as *mut u8, len);
+            }
+
+            // Create Uint8Array view
+            let mut typedarray = std::ptr::null_mut();
+            let status = napi::sys::napi_create_typedarray(
+                raw_env, 1, len, arraybuffer, 0, &mut typedarray,
+            );
+            if status != napi::sys::Status::napi_ok {
+                return Err(napi::Error::from_reason(
+                    "Failed to create Uint8Array for callback RustBuffer arg",
+                ));
+            }
+
+            // Free the RustBuffer — callback takes ownership
+            if !rb.data.is_null() && rb.capacity > 0 && !rb_free_ptr.is_null() {
+                let free_fn: RustBufferFreeFn = std::mem::transmute(rb_free_ptr);
+                let mut free_status = RustCallStatusC::default();
+                free_fn(rb, &mut free_status as *mut _);
+            }
+
+            Ok(napi::JsUnknown::from_raw(raw_env, typedarray)?)
         }
         _ => Err(napi::Error::from_reason(format!(
             "Unsupported callback arg type: {:?}",

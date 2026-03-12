@@ -148,7 +148,7 @@ unsafe fn vtable_trampoline_main_thread(
 
     for (i, desc) in userdata.arg_types.iter().enumerate() {
         let arg_ptr = *args.add(i);
-        let js_val = match c_arg_to_js(&env, desc, arg_ptr) {
+        let js_val = match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) {
             Ok(v) => v,
             Err(_) => return,
         };
