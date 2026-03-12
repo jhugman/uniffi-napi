@@ -14,7 +14,7 @@ use crate::is_main_thread;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 /// Packed arguments for cross-thread VTable callback dispatch.
-pub(crate) struct VTableCallRequest {
+struct VTableCallRequest {
     /// C argument values, read from raw pointers on the calling thread.
     args: Vec<RawCallbackArg>,
     /// If has_rust_call_status, the initial code value from C.
@@ -98,7 +98,7 @@ pub struct VTableTrampolineUserdata {
     pub ret_type: FfiTypeDesc,
     /// Whether the last C arg is a &mut RustCallStatus.
     pub has_rust_call_status: bool,
-    pub(crate) tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
+    tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
 }
 
 // Safety: raw_env and raw_fn are only accessed on the main thread.
@@ -443,14 +443,14 @@ fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: 
                 return;
             }
         };
-        if js_status
-            .set_named_property(
-                "code",
-                env.create_int32(request.rust_call_status_code as i32)
-                    .unwrap(),
-            )
-            .is_err()
-        {
+        let code_val = match env.create_int32(request.rust_call_status_code as i32) {
+            Ok(v) => v,
+            Err(_) => {
+                send_default(&request);
+                return;
+            }
+        };
+        if js_status.set_named_property("code", code_val).is_err() {
             send_default(&request);
             return;
         }
