@@ -51,6 +51,15 @@ pub extern "C" fn uniffi_test_fn_double(x: f64, status: &mut RustCallStatus) -> 
     x * 2.0
 }
 
+// --- RustBuffer helpers ---
+
+fn free_buffer(buf: RustBuffer) {
+    if !buf.data.is_null() && buf.capacity > 0 {
+        let layout = std::alloc::Layout::from_size_align(buf.capacity as usize, 1).unwrap();
+        unsafe { std::alloc::dealloc(buf.data, layout) };
+    }
+}
+
 // --- RustBuffer management ---
 
 #[no_mangle]
@@ -71,11 +80,7 @@ pub extern "C" fn uniffi_test_rustbuffer_alloc(
 #[no_mangle]
 pub extern "C" fn uniffi_test_rustbuffer_free(buf: RustBuffer, status: &mut RustCallStatus) {
     status.code = 0;
-    if !buf.data.is_null() && buf.capacity > 0 {
-        let layout =
-            std::alloc::Layout::from_size_align(buf.capacity as usize, 1).unwrap();
-        unsafe { std::alloc::dealloc(buf.data, layout) };
-    }
+    free_buffer(buf);
 }
 
 #[no_mangle]
@@ -127,17 +132,80 @@ pub extern "C" fn uniffi_test_fn_echo_buffer(
         ptr::copy_nonoverlapping(buf.data, ptr, len);
         ptr
     };
-    // Free input
-    if buf.capacity > 0 && !buf.data.is_null() {
-        let old_layout =
-            std::alloc::Layout::from_size_align(buf.capacity as usize, 1).unwrap();
-        unsafe { std::alloc::dealloc(buf.data, old_layout) };
-    }
+    free_buffer(buf);
     RustBuffer {
         capacity: len as u64,
         len: len as u64,
         data: new_data,
     }
+}
+
+// --- RustBuffer multi-arg and utility functions ---
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_concat_buffers(
+    buf1: RustBuffer,
+    buf2: RustBuffer,
+    status: &mut RustCallStatus,
+) -> RustBuffer {
+    status.code = 0;
+    let len1 = buf1.len as usize;
+    let len2 = buf2.len as usize;
+    let total = len1 + len2;
+
+    if total == 0 {
+        free_buffer(buf1);
+        free_buffer(buf2);
+        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
+    }
+
+    let layout = std::alloc::Layout::from_size_align(total, 1).unwrap();
+    let data = unsafe {
+        let ptr = std::alloc::alloc(layout);
+        if len1 > 0 && !buf1.data.is_null() {
+            ptr::copy_nonoverlapping(buf1.data, ptr, len1);
+        }
+        if len2 > 0 && !buf2.data.is_null() {
+            ptr::copy_nonoverlapping(buf2.data, ptr.add(len1), len2);
+        }
+        ptr
+    };
+
+    free_buffer(buf1);
+    free_buffer(buf2);
+
+    RustBuffer { capacity: total as u64, len: total as u64, data }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_buffer_len(
+    buf: RustBuffer,
+    status: &mut RustCallStatus,
+) -> u32 {
+    status.code = 0;
+    let len = buf.len as u32;
+    free_buffer(buf);
+    len
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_make_buffer(
+    value: u8,
+    count: u32,
+    status: &mut RustCallStatus,
+) -> RustBuffer {
+    status.code = 0;
+    let len = count as usize;
+    if len == 0 {
+        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
+    }
+    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
+    let data = unsafe {
+        let ptr = std::alloc::alloc(layout);
+        ptr::write_bytes(ptr, value, len);
+        ptr
+    };
+    RustBuffer { capacity: len as u64, len: len as u64, data }
 }
 
 // --- Error-producing function ---
