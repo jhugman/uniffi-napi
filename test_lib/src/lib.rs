@@ -417,6 +417,101 @@ pub extern "C" fn uniffi_test_fn_is_notify_done(status: &mut RustCallStatus) -> 
     if NOTIFY_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
 }
 
+// --- VTable with RustBuffer callback arg ---
+
+#[repr(C)]
+pub struct BufferProcessorVTable {
+    pub process: extern "C" fn(u64, RustBuffer, &mut RustCallStatus) -> u32,
+    pub free: extern "C" fn(u64, &mut RustCallStatus),
+}
+
+static mut STORED_BUFFER_VTABLE: Option<BufferProcessorVTable> = None;
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_init_buffer_vtable(
+    vtable: &BufferProcessorVTable,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    unsafe {
+        STORED_BUFFER_VTABLE = Some(BufferProcessorVTable {
+            process: vtable.process,
+            free: vtable.free,
+        });
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_use_buffer_vtable(
+    handle: u64,
+    status: &mut RustCallStatus,
+) -> u32 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vtable) = STORED_BUFFER_VTABLE {
+            let data_bytes: &[u8] = &[1, 2, 3, 4, 5];
+            let len = data_bytes.len();
+            let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
+            let data = std::alloc::alloc(layout);
+            ptr::copy_nonoverlapping(data_bytes.as_ptr(), data, len);
+            let buf = RustBuffer { capacity: len as u64, len: len as u64, data };
+
+            let mut cb_status = RustCallStatus {
+                code: 0,
+                error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
+            };
+            (vtable.process)(handle, buf, &mut cb_status)
+        } else {
+            0
+        }
+    }
+}
+
+static BUFFER_THREAD_RESULT: AtomicI32 = AtomicI32::new(0);
+static BUFFER_THREAD_DONE: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_use_buffer_vtable_from_thread(
+    handle: u64,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    BUFFER_THREAD_DONE.store(false, Ordering::SeqCst);
+    unsafe {
+        if let Some(ref vtable) = STORED_BUFFER_VTABLE {
+            let process = vtable.process;
+            std::thread::spawn(move || {
+                let data_bytes: &[u8] = &[10, 20, 30];
+                let len = data_bytes.len();
+                let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
+                let data = std::alloc::alloc(layout);
+                ptr::copy_nonoverlapping(data_bytes.as_ptr(), data, len);
+                let buf = RustBuffer { capacity: len as u64, len: len as u64, data };
+
+                let mut cb_status = RustCallStatus {
+                    code: 0,
+                    error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
+                };
+                let result = (process)(handle, buf, &mut cb_status);
+                BUFFER_THREAD_RESULT.store(result as i32, Ordering::SeqCst);
+                BUFFER_THREAD_DONE.store(true, Ordering::SeqCst);
+            });
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_is_buffer_thread_done(status: &mut RustCallStatus) -> i8 {
+    status.code = 0;
+    if BUFFER_THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_get_buffer_thread_result(status: &mut RustCallStatus) -> i32 {
+    status.code = 0;
+    BUFFER_THREAD_RESULT.load(Ordering::SeqCst)
+}
+
 // --- Cross-thread callback with RustBuffer ---
 
 #[no_mangle]

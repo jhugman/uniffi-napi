@@ -298,3 +298,145 @@ test('VTable: non-blocking callback invoked from another thread (fire-and-forget
 
   assert.strictEqual(notifiedHandle, 42n);
 });
+
+test('VTable: callback receives RustBuffer arg (same-thread)', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {
+      BufferProcessorVTable: [
+        { name: 'process', type: FfiType.Callback('vtable_process') },
+        { name: 'free', type: FfiType.Callback('vtable_buf_free') },
+      ],
+    },
+    callbacks: {
+      vtable_process: {
+        args: [FfiType.UInt64, FfiType.RustBuffer],
+        ret: FfiType.UInt32,
+        hasRustCallStatus: true,
+      },
+      vtable_buf_free: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+    },
+    functions: {
+      uniffi_test_fn_init_buffer_vtable: {
+        args: [FfiType.Reference(FfiType.Struct('BufferProcessorVTable'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_use_buffer_vtable: {
+        args: [FfiType.UInt64],
+        ret: FfiType.UInt32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status1 = { code: 0 };
+  nm.uniffi_test_fn_init_buffer_vtable({
+    process: (handle, data, callStatus) => {
+      callStatus.code = 0;
+      // data should be Uint8Array [1, 2, 3, 4, 5]
+      // Return the sum of bytes as u32
+      let sum = 0;
+      for (const b of data) sum += b;
+      return sum;
+    },
+    free: (handle, callStatus) => {
+      callStatus.code = 0;
+    },
+  }, status1);
+  assert.strictEqual(status1.code, 0);
+
+  const status2 = { code: 0 };
+  const result = nm.uniffi_test_fn_use_buffer_vtable(1n, status2);
+  assert.strictEqual(status2.code, 0);
+  assert.strictEqual(result, 15); // 1+2+3+4+5
+});
+
+test('VTable: callback receives RustBuffer arg from another thread', async () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {
+      BufferProcessorVTable: [
+        { name: 'process', type: FfiType.Callback('vtable_process') },
+        { name: 'free', type: FfiType.Callback('vtable_buf_free') },
+      ],
+    },
+    callbacks: {
+      vtable_process: {
+        args: [FfiType.UInt64, FfiType.RustBuffer],
+        ret: FfiType.UInt32,
+        hasRustCallStatus: true,
+      },
+      vtable_buf_free: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+    },
+    functions: {
+      uniffi_test_fn_init_buffer_vtable: {
+        args: [FfiType.Reference(FfiType.Struct('BufferProcessorVTable'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_use_buffer_vtable_from_thread: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_is_buffer_thread_done: {
+        args: [],
+        ret: FfiType.Int8,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_get_buffer_thread_result: {
+        args: [],
+        ret: FfiType.Int32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status1 = { code: 0 };
+  nm.uniffi_test_fn_init_buffer_vtable({
+    process: (handle, data, callStatus) => {
+      callStatus.code = 0;
+      // data should be Uint8Array [10, 20, 30]
+      let sum = 0;
+      for (const b of data) sum += b;
+      return sum;
+    },
+    free: (handle, callStatus) => {
+      callStatus.code = 0;
+    },
+  }, status1);
+  assert.strictEqual(status1.code, 0);
+
+  const status2 = { code: 0 };
+  nm.uniffi_test_fn_use_buffer_vtable_from_thread(1n, status2);
+  assert.strictEqual(status2.code, 0);
+
+  await new Promise((resolve, reject) => {
+    let attempts = 0;
+    const poll = () => {
+      attempts++;
+      const s = { code: 0 };
+      const done = nm.uniffi_test_fn_is_buffer_thread_done(s);
+      if (done === 1) resolve();
+      else if (attempts > 100) reject(new Error('Timed out'));
+      else setImmediate(poll);
+    };
+    setImmediate(poll);
+  });
+
+  const status3 = { code: 0 };
+  const result = nm.uniffi_test_fn_get_buffer_thread_result(status3);
+  assert.strictEqual(status3.code, 0);
+  assert.strictEqual(result, 60); // 10+20+30
+});
