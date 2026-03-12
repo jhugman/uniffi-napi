@@ -635,6 +635,185 @@ pub extern "C" fn uniffi_test_fn_get_returner_thread_result(status: &mut RustCal
     RETURNER_THREAD_RESULT.load(Ordering::SeqCst)
 }
 
+// --- ScalarEchoVTable: test all scalar types through VTable arg+ret ---
+
+#[repr(C)]
+pub struct ScalarEchoVTable {
+    pub echo_u8: extern "C" fn(u64, u8, &mut RustCallStatus) -> u8,
+    pub echo_i8: extern "C" fn(u64, i8, &mut RustCallStatus) -> i8,
+    pub echo_u16: extern "C" fn(u64, u16, &mut RustCallStatus) -> u16,
+    pub echo_i16: extern "C" fn(u64, i16, &mut RustCallStatus) -> i16,
+    pub echo_u32: extern "C" fn(u64, u32, &mut RustCallStatus) -> u32,
+    pub echo_i32: extern "C" fn(u64, i32, &mut RustCallStatus) -> i32,
+    pub echo_u64: extern "C" fn(u64, u64, &mut RustCallStatus) -> u64,
+    pub echo_i64: extern "C" fn(u64, i64, &mut RustCallStatus) -> i64,
+    pub echo_f32: extern "C" fn(u64, f32, &mut RustCallStatus) -> f32,
+    pub echo_f64: extern "C" fn(u64, f64, &mut RustCallStatus) -> f64,
+    pub free: extern "C" fn(u64, &mut RustCallStatus),
+}
+
+static mut STORED_SCALAR_ECHO_VTABLE: Option<ScalarEchoVTable> = None;
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_init_scalar_echo_vtable(
+    vtable: &ScalarEchoVTable,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    unsafe {
+        STORED_SCALAR_ECHO_VTABLE = Some(ScalarEchoVTable {
+            echo_u8: vtable.echo_u8,
+            echo_i8: vtable.echo_i8,
+            echo_u16: vtable.echo_u16,
+            echo_i16: vtable.echo_i16,
+            echo_u32: vtable.echo_u32,
+            echo_i32: vtable.echo_i32,
+            echo_u64: vtable.echo_u64,
+            echo_i64: vtable.echo_i64,
+            echo_f32: vtable.echo_f32,
+            echo_f64: vtable.echo_f64,
+            free: vtable.free,
+        });
+    }
+}
+
+fn new_cb_status() -> RustCallStatus {
+    RustCallStatus {
+        code: 0,
+        error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_u8_via_vtable(
+    handle: u64, value: u8, status: &mut RustCallStatus,
+) -> u8 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_u8)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_i8_via_vtable(
+    handle: u64, value: i8, status: &mut RustCallStatus,
+) -> i8 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_i8)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_u16_via_vtable(
+    handle: u64, value: u16, status: &mut RustCallStatus,
+) -> u16 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_u16)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_i16_via_vtable(
+    handle: u64, value: i16, status: &mut RustCallStatus,
+) -> i16 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_i16)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_u32_via_vtable(
+    handle: u64, value: u32, status: &mut RustCallStatus,
+) -> u32 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_u32)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_i32_via_vtable(
+    handle: u64, value: i32, status: &mut RustCallStatus,
+) -> i32 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_i32)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_u64_via_vtable(
+    handle: u64, value: u64, status: &mut RustCallStatus,
+) -> u64 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_u64)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_i64_via_vtable(
+    handle: u64, value: i64, status: &mut RustCallStatus,
+) -> i64 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_i64)(handle, value, &mut s)
+        } else { 0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_f32_via_vtable(
+    handle: u64, value: f32, status: &mut RustCallStatus,
+) -> f32 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_f32)(handle, value, &mut s)
+        } else { 0.0 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_f64_via_vtable(
+    handle: u64, value: f64, status: &mut RustCallStatus,
+) -> f64 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let mut s = new_cb_status();
+            (vt.echo_f64)(handle, value, &mut s)
+        } else { 0.0 }
+    }
+}
+
 // --- Cross-thread callback with RustBuffer ---
 
 #[no_mangle]
