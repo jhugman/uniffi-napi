@@ -244,6 +244,35 @@ pub extern "C" fn uniffi_test_fn_call_callback(
     cb(handle, value);
 }
 
+// --- Callback with RustBuffer arg ---
+
+pub type BufferCallback = extern "C" fn(u64, RustBuffer);
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_call_callback_with_buffer(
+    cb: BufferCallback,
+    handle: u64,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    // Create a buffer with known content [0xDE, 0xAD, 0xBE, 0xEF]
+    let data_bytes: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+    let len = data_bytes.len();
+    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
+    let data = unsafe {
+        let ptr = std::alloc::alloc(layout);
+        ptr::copy_nonoverlapping(data_bytes.as_ptr(), ptr, len);
+        ptr
+    };
+    let buf = RustBuffer {
+        capacity: len as u64,
+        len: len as u64,
+        data,
+    };
+    cb(handle, buf);
+    // Callback takes ownership of the buffer — do NOT free here
+}
+
 // --- Callback from another thread ---
 
 #[no_mangle]
