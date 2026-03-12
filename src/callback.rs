@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use libffi::low;
 use libffi::middle::{Cif, Type};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use napi::{Env, NapiValue};
+use napi::{Env, NapiRaw, NapiValue};
 
 use crate::cif::ffi_type_for;
 use crate::ffi_type::FfiTypeDesc;
@@ -123,7 +123,7 @@ unsafe fn trampoline_cross_thread(args: *const *const c_void, userdata: &Trampol
 }
 
 /// Read a C argument from a raw pointer into a RawCallbackArg.
-unsafe fn read_raw_arg(desc: &FfiTypeDesc, arg_ptr: *const c_void) -> Option<RawCallbackArg> {
+pub unsafe fn read_raw_arg(desc: &FfiTypeDesc, arg_ptr: *const c_void) -> Option<RawCallbackArg> {
     match desc {
         FfiTypeDesc::UInt8 => Some(RawCallbackArg::UInt8(*(arg_ptr as *const u8))),
         FfiTypeDesc::Int8 => Some(RawCallbackArg::Int8(*(arg_ptr as *const i8))),
@@ -157,8 +157,65 @@ pub fn raw_arg_to_js(env: &Env, raw_arg: &RawCallbackArg) -> napi::Result<napi::
     }
 }
 
+/// Convert a JS return value to a RawCallbackArg based on the expected return type.
+/// Used by VTable cross-thread dispatch to send return values back to the calling thread.
+pub fn js_return_to_raw(
+    env: &Env,
+    ret_type: &FfiTypeDesc,
+    js_val: napi::JsUnknown,
+) -> Option<RawCallbackArg> {
+    let raw_env = env.raw();
+    unsafe {
+        match ret_type {
+            FfiTypeDesc::Int8 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::Int8(num.get_double().ok()? as i8))
+            }
+            FfiTypeDesc::UInt8 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::UInt8(num.get_double().ok()? as u8))
+            }
+            FfiTypeDesc::Int16 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::Int16(num.get_double().ok()? as i16))
+            }
+            FfiTypeDesc::UInt16 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::UInt16(num.get_double().ok()? as u16))
+            }
+            FfiTypeDesc::Int32 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::Int32(num.get_double().ok()? as i32))
+            }
+            FfiTypeDesc::UInt32 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::UInt32(num.get_double().ok()? as u32))
+            }
+            FfiTypeDesc::Int64 => {
+                let bigint = napi::JsBigInt::from_raw(raw_env, js_val.raw()).ok()?;
+                let (v, _) = bigint.get_i64().ok()?;
+                Some(RawCallbackArg::Int64(v))
+            }
+            FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => {
+                let bigint = napi::JsBigInt::from_raw(raw_env, js_val.raw()).ok()?;
+                let (v, _) = bigint.get_u64().ok()?;
+                Some(RawCallbackArg::UInt64(v))
+            }
+            FfiTypeDesc::Float32 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::Float32(num.get_double().ok()? as f32))
+            }
+            FfiTypeDesc::Float64 => {
+                let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
+                Some(RawCallbackArg::Float64(num.get_double().ok()?))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Read a C argument from a raw pointer and convert it to a JS value.
-unsafe fn c_arg_to_js(
+pub unsafe fn c_arg_to_js(
     env: &Env,
     desc: &FfiTypeDesc,
     arg_ptr: *const c_void,
