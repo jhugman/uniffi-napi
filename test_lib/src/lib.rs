@@ -512,6 +512,105 @@ pub extern "C" fn uniffi_test_fn_get_buffer_thread_result(status: &mut RustCallS
     BUFFER_THREAD_RESULT.load(Ordering::SeqCst)
 }
 
+// --- VTable with callback that returns RustBuffer ---
+
+#[repr(C)]
+pub struct BufferReturnerVTable {
+    pub get_data: extern "C" fn(u64, &mut RustCallStatus) -> RustBuffer,
+    pub free: extern "C" fn(u64, &mut RustCallStatus),
+}
+
+static mut STORED_BUFFER_RETURNER_VTABLE: Option<BufferReturnerVTable> = None;
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_init_buffer_returner_vtable(
+    vtable: &BufferReturnerVTable,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    unsafe {
+        STORED_BUFFER_RETURNER_VTABLE = Some(BufferReturnerVTable {
+            get_data: vtable.get_data,
+            free: vtable.free,
+        });
+    }
+}
+
+/// Calls get_data, reads the returned buffer, sums the bytes, frees the buffer, returns the sum.
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_use_buffer_returner(
+    handle: u64,
+    status: &mut RustCallStatus,
+) -> u32 {
+    status.code = 0;
+    unsafe {
+        if let Some(ref vtable) = STORED_BUFFER_RETURNER_VTABLE {
+            let mut cb_status = RustCallStatus {
+                code: 0,
+                error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
+            };
+            let buf = (vtable.get_data)(handle, &mut cb_status);
+            let len = buf.len as usize;
+            let mut sum: u32 = 0;
+            if len > 0 && !buf.data.is_null() {
+                for i in 0..len {
+                    sum += *buf.data.add(i) as u32;
+                }
+            }
+            free_buffer(buf);
+            sum
+        } else {
+            0
+        }
+    }
+}
+
+static RETURNER_THREAD_RESULT: AtomicI32 = AtomicI32::new(0);
+static RETURNER_THREAD_DONE: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_use_buffer_returner_from_thread(
+    handle: u64,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    RETURNER_THREAD_DONE.store(false, Ordering::SeqCst);
+    unsafe {
+        if let Some(ref vtable) = STORED_BUFFER_RETURNER_VTABLE {
+            let get_data = vtable.get_data;
+            std::thread::spawn(move || {
+                let mut cb_status = RustCallStatus {
+                    code: 0,
+                    error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
+                };
+                let buf = (get_data)(handle, &mut cb_status);
+                let len = buf.len as usize;
+                let mut sum: u32 = 0;
+                if len > 0 && !buf.data.is_null() {
+                    for i in 0..len {
+                        sum += *buf.data.add(i) as u32;
+                    }
+                }
+                free_buffer(buf);
+                RETURNER_THREAD_RESULT.store(sum as i32, Ordering::SeqCst);
+                RETURNER_THREAD_DONE.store(true, Ordering::SeqCst);
+            });
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_is_returner_thread_done(status: &mut RustCallStatus) -> i8 {
+    status.code = 0;
+    if RETURNER_THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_get_returner_thread_result(status: &mut RustCallStatus) -> i32 {
+    status.code = 0;
+    RETURNER_THREAD_RESULT.load(Ordering::SeqCst)
+}
+
 // --- Cross-thread callback with RustBuffer ---
 
 #[no_mangle]
