@@ -3,6 +3,10 @@ use libffi::middle::Type;
 use crate::ffi_type::FfiTypeDesc;
 
 /// Maps an `FfiTypeDesc` to a `libffi::middle::Type`.
+///
+/// Panics on unsupported types (`ForeignBytes`, bare `Struct`). These types
+/// are parseable from JS but have no direct CIF representation. `Struct` is
+/// always used via `Reference(Struct(...))` which maps to `Type::pointer()`.
 pub fn ffi_type_for(desc: &FfiTypeDesc) -> Type {
     match desc {
         FfiTypeDesc::UInt8 => Type::u8(),
@@ -22,7 +26,11 @@ pub fn ffi_type_for(desc: &FfiTypeDesc) -> Type {
         FfiTypeDesc::Void => Type::void(),
         FfiTypeDesc::RustCallStatus => Type::pointer(), // always passed as &mut
         FfiTypeDesc::RustBuffer => Type::structure(vec![Type::u64(), Type::u64(), Type::pointer()]),
-        FfiTypeDesc::ForeignBytes => todo!("ForeignBytes struct type"),
-        FfiTypeDesc::Struct(_) => todo!("Custom struct type - Task 10"),
+        FfiTypeDesc::ForeignBytes => {
+            panic!("ForeignBytes has no CIF representation; it is not used in UniFFI function signatures")
+        }
+        FfiTypeDesc::Struct(name) => {
+            panic!("Bare Struct('{name}') has no CIF representation; use Reference(Struct('{name}')) for pass-by-pointer")
+        }
     }
 }

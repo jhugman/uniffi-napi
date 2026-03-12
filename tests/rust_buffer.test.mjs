@@ -40,7 +40,6 @@ test('RustBuffer echo: pass Uint8Array, get same bytes back', () => {
   assert.strictEqual(status.code, 0);
   assert.ok(result instanceof Uint8Array);
   assert.deepStrictEqual(result, input);
-  lib.close();
 });
 
 test('RustBuffer echo: empty buffer', () => {
@@ -65,5 +64,4 @@ test('RustBuffer echo: empty buffer', () => {
   assert.strictEqual(status.code, 0);
   assert.ok(result instanceof Uint8Array);
   assert.strictEqual(result.length, 0);
-  lib.close();
 });

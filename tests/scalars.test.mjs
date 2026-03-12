@@ -37,7 +37,6 @@ test('register and call i32 add function', () => {
   const result = nm.uniffi_test_fn_add(3, 4, status);
   assert.strictEqual(result, 7);
   assert.strictEqual(status.code, 0);
-  lib.close();
 });
 
 test('register and call i8 negate function', () => {
@@ -58,7 +57,6 @@ test('register and call i8 negate function', () => {
   const status = { code: 0 };
   const result = nm.uniffi_test_fn_negate(42, status);
   assert.strictEqual(result, -42);
-  lib.close();
 });
 
 test('register and call u64 handle function', () => {
@@ -79,7 +77,6 @@ test('register and call u64 handle function', () => {
   const status = { code: 0 };
   const result = nm.uniffi_test_fn_handle(status);
   assert.strictEqual(result, 0xDEADBEEF12345678n);
-  lib.close();
 });
 
 test('register and call void function', () => {
@@ -101,7 +98,6 @@ test('register and call void function', () => {
   const result = nm.uniffi_test_fn_void(status);
   assert.strictEqual(result, undefined);
   assert.strictEqual(status.code, 0);
-  lib.close();
 });
 
 test('register and call f64 double function', () => {
@@ -122,5 +118,4 @@ test('register and call f64 double function', () => {
   const status = { code: 0 };
   const result = nm.uniffi_test_fn_double(3.14, status);
   assert.strictEqual(result, 6.28);
-  lib.close();
 });

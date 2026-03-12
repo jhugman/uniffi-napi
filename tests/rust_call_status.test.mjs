@@ -41,7 +41,6 @@ test('RustCallStatus: error code and errorBuf are written back', () => {
   assert.strictEqual(status.errorBuf.length, 20); // "something went wrong"
   const msg = new TextDecoder().decode(status.errorBuf);
   assert.strictEqual(msg, 'something went wrong');
-  lib.close();
 });
 
 test('RustCallStatus: success has no errorBuf', () => {
@@ -64,5 +63,4 @@ test('RustCallStatus: success has no errorBuf', () => {
 
   assert.strictEqual(status.code, 0);
   assert.strictEqual(status.errorBuf, undefined);
-  lib.close();
 });

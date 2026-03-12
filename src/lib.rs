@@ -33,7 +33,7 @@ pub fn is_main_thread() -> bool {
 
 #[napi]
 pub struct UniffiNativeModule {
-    handle: Option<LibraryHandle>,
+    handle: LibraryHandle,
 }
 
 #[napi]
@@ -41,22 +41,11 @@ impl UniffiNativeModule {
     #[napi(factory)]
     pub fn open(path: String) -> napi::Result<Self> {
         let handle = LibraryHandle::open(&path)?;
-        Ok(Self {
-            handle: Some(handle),
-        })
-    }
-
-    #[napi]
-    pub fn close(&mut self) {
-        self.handle.take();
+        Ok(Self { handle })
     }
 
     #[napi]
     pub fn register(&self, env: Env, definitions: JsObject) -> napi::Result<JsObject> {
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("Module is closed"))?;
-        register::register(env, handle, definitions)
+        register::register(env, &self.handle, definitions)
     }
 }

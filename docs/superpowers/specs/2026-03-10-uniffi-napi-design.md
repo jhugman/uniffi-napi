@@ -332,12 +332,7 @@ Node event loop (next tick):
 - Trampoline allocations (`ffi_closure_alloc`) for callbacks
 - ThreadsafeFunction references for active callbacks
 
-Cleanup: `UniffiNativeModule` should expose a `close()` method that:
-1. Frees all trampoline allocations
-2. Releases ThreadsafeFunction references
-3. Closes the dlopen handle
-
-The generated code should call `close()` on `process.beforeExit` (matching current behavior). If `close()` is not called, cleanup happens when the `UniffiNativeModule` is garbage collected via napi-rs `Drop` implementation.
+Cleanup happens when the `UniffiNativeModule` is garbage collected via napi-rs `Drop` implementation, which closes the dlopen handle. There is no explicit `close()` method — registered functions hold raw symbol pointers into the library, so the library must outlive all registered functions. GC naturally enforces this since both are held in the same module scope.
 
 ## Breaking Changes from ffi-rs
 
@@ -360,7 +355,7 @@ The `libffi-sys` crate requires a C toolchain (and sometimes autotools) to build
 
 ## Non-Goals
 
-- **Hot-reload of native libraries**: not supported; `close()` + `open()` is the mechanism for reloading
+- **Hot-reload of native libraries**: not supported; library lifetime is tied to GC of the `UniffiNativeModule`
 - **Multiple simultaneous libraries**: supported (call `open()` multiple times), but each returns a separate `UniffiNativeModule`
 - **npm package structure**: follows standard napi-rs `@scope/package-platform` optional dependencies pattern for pre-built binaries
 

@@ -17,7 +17,6 @@ const SYMBOLS = {
 test('open() loads a library', () => {
   const lib = UniffiNativeModule.open(LIB_PATH);
   assert.ok(lib);
-  lib.close();
 });
 
 test('open() throws for nonexistent library', () => {
@@ -40,5 +39,4 @@ test('register() throws for missing symbol', () => {
       functions: {},
     });
   }, /Error/);
-  lib.close();
 });

@@ -234,12 +234,8 @@ fn call_ffi_function(
 ) -> Result<JsUnknown> {
     let declared_arg_count = arg_types.len();
 
-    // Storage for callback closures that must live until after ffi_call.
-    // We use Box<TrampolineUserdata> so the userdata has a stable address,
-    // then create a Closure that borrows from it.
-    // _callback_keepalive keeps both alive until this function returns.
-    let mut _callback_keepalive: Vec<(Box<TrampolineUserdata>, Closure<'_>)> = Vec::new();
-    // The actual function pointer values, stored separately so we can borrow them for ffi args.
+    // The function pointer values for callback trampolines, stored separately
+    // so we can borrow them for ffi args.
     let mut callback_fn_ptrs: Vec<*const c_void> = Vec::new();
 
     // Storage for struct (VTable) pointers passed by reference.

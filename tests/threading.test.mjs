@@ -51,5 +51,4 @@ test('callback: invoked from another thread dispatches to event loop', async () 
 
   assert.strictEqual(result.handle, 99n);
   assert.strictEqual(result.value, -3);
-  lib.close();
 });
