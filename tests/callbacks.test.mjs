@@ -656,3 +656,96 @@ test('VTable: scalar echo — all types round-trip (same-thread)', () => {
   assert.ok(Math.abs(f32Result - 3.14) < 0.01, `f32 echo: expected ~3.14, got ${f32Result}`);
   assert.strictEqual(nm.uniffi_test_fn_echo_f64_via_vtable(1n, 2.718281828, s()), 2.718281828);
 });
+
+test('VTable: scalar echo — all types round-trip (cross-thread)', async () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {
+      ScalarEchoVTable: [
+        { name: 'echo_u8', type: FfiType.Callback('vt_echo_u8') },
+        { name: 'echo_i8', type: FfiType.Callback('vt_echo_i8') },
+        { name: 'echo_u16', type: FfiType.Callback('vt_echo_u16') },
+        { name: 'echo_i16', type: FfiType.Callback('vt_echo_i16') },
+        { name: 'echo_u32', type: FfiType.Callback('vt_echo_u32') },
+        { name: 'echo_i32', type: FfiType.Callback('vt_echo_i32') },
+        { name: 'echo_u64', type: FfiType.Callback('vt_echo_u64') },
+        { name: 'echo_i64', type: FfiType.Callback('vt_echo_i64') },
+        { name: 'echo_f32', type: FfiType.Callback('vt_echo_f32') },
+        { name: 'echo_f64', type: FfiType.Callback('vt_echo_f64') },
+        { name: 'free', type: FfiType.Callback('vt_echo_free') },
+      ],
+    },
+    callbacks: {
+      vt_echo_u8:  { args: [FfiType.UInt64, FfiType.UInt8],   ret: FfiType.UInt8,   hasRustCallStatus: true },
+      vt_echo_i8:  { args: [FfiType.UInt64, FfiType.Int8],    ret: FfiType.Int8,    hasRustCallStatus: true },
+      vt_echo_u16: { args: [FfiType.UInt64, FfiType.UInt16],  ret: FfiType.UInt16,  hasRustCallStatus: true },
+      vt_echo_i16: { args: [FfiType.UInt64, FfiType.Int16],   ret: FfiType.Int16,   hasRustCallStatus: true },
+      vt_echo_u32: { args: [FfiType.UInt64, FfiType.UInt32],  ret: FfiType.UInt32,  hasRustCallStatus: true },
+      vt_echo_i32: { args: [FfiType.UInt64, FfiType.Int32],   ret: FfiType.Int32,   hasRustCallStatus: true },
+      vt_echo_u64: { args: [FfiType.UInt64, FfiType.UInt64],  ret: FfiType.UInt64,  hasRustCallStatus: true },
+      vt_echo_i64: { args: [FfiType.UInt64, FfiType.Int64],   ret: FfiType.Int64,   hasRustCallStatus: true },
+      vt_echo_f32: { args: [FfiType.UInt64, FfiType.Float32], ret: FfiType.Float32, hasRustCallStatus: true },
+      vt_echo_f64: { args: [FfiType.UInt64, FfiType.Float64], ret: FfiType.Float64, hasRustCallStatus: true },
+      vt_echo_free: { args: [FfiType.UInt64], ret: FfiType.Void, hasRustCallStatus: true },
+    },
+    functions: {
+      uniffi_test_fn_init_scalar_echo_vtable: {
+        args: [FfiType.Reference(FfiType.Struct('ScalarEchoVTable'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_echo_all_scalars_via_vtable_from_thread: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_is_scalar_echo_thread_done: {
+        args: [],
+        ret: FfiType.Int8,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_get_scalar_echo_thread_result: {
+        args: [],
+        ret: FfiType.Int32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  // Register VTable: each callback echoes its argument
+  const echo = (handle, value, callStatus) => { callStatus.code = 0; return value; };
+  const status0 = { code: 0 };
+  nm.uniffi_test_fn_init_scalar_echo_vtable({
+    echo_u8: echo, echo_i8: echo, echo_u16: echo, echo_i16: echo,
+    echo_u32: echo, echo_i32: echo, echo_u64: echo, echo_i64: echo,
+    echo_f32: echo, echo_f64: echo,
+    free: (handle, callStatus) => { callStatus.code = 0; },
+  }, status0);
+  assert.strictEqual(status0.code, 0);
+
+  // Fire cross-thread echo of all scalar types
+  const status1 = { code: 0 };
+  nm.uniffi_test_fn_echo_all_scalars_via_vtable_from_thread(1n, status1);
+  assert.strictEqual(status1.code, 0);
+
+  // Poll for completion
+  await new Promise((resolve, reject) => {
+    let attempts = 0;
+    const poll = () => {
+      attempts++;
+      const s = { code: 0 };
+      const done = nm.uniffi_test_fn_is_scalar_echo_thread_done(s);
+      if (done === 1) resolve();
+      else if (attempts > 100) reject(new Error('Timed out'));
+      else setImmediate(poll);
+    };
+    setImmediate(poll);
+  });
+
+  // All 10 types should have echoed correctly
+  const status2 = { code: 0 };
+  const passCount = nm.uniffi_test_fn_get_scalar_echo_thread_result(status2);
+  assert.strictEqual(status2.code, 0);
+  assert.strictEqual(passCount, 10, `Expected 10 scalar types to pass, got ${passCount}`);
+});
