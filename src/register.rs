@@ -527,6 +527,11 @@ fn js_uint8array_to_rust_buffer(
         ));
     }
 
+    if length > i32::MAX as usize {
+        return Err(napi::Error::from_reason(
+            "RustBuffer too large for ForeignBytes (max 2GB)".to_string(),
+        ));
+    }
     let data_ptr = data as *const u8;
     let foreign = ForeignBytesC {
         len: length as i32,

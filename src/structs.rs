@@ -391,6 +391,9 @@ unsafe fn write_return_value(
             }
             let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
 
+            if length > i32::MAX as usize {
+                return;
+            }
             let foreign = ForeignBytesC {
                 len: length as i32,
                 data: if length > 0 {
@@ -459,6 +462,9 @@ unsafe fn write_raw_return_value(
 
             // rustbuffer_from_bytes is a pure C function, safe to call from the calling thread.
             let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
+            if data.len() > i32::MAX as usize {
+                return;
+            }
             let foreign = ForeignBytesC {
                 len: data.len() as i32,
                 data: if data.is_empty() {
