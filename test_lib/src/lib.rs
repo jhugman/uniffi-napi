@@ -841,3 +841,80 @@ pub extern "C" fn uniffi_test_fn_call_callback_with_buffer_from_thread(
         cb(handle, buf);
     });
 }
+
+static SCALAR_ECHO_THREAD_RESULT: AtomicI32 = AtomicI32::new(0);
+static SCALAR_ECHO_THREAD_DONE: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_echo_all_scalars_via_vtable_from_thread(
+    handle: u64,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    SCALAR_ECHO_THREAD_DONE.store(false, Ordering::SeqCst);
+    unsafe {
+        if let Some(ref vt) = STORED_SCALAR_ECHO_VTABLE {
+            let echo_u8 = vt.echo_u8;
+            let echo_i8 = vt.echo_i8;
+            let echo_u16 = vt.echo_u16;
+            let echo_i16 = vt.echo_i16;
+            let echo_u32 = vt.echo_u32;
+            let echo_i32 = vt.echo_i32;
+            let echo_u64 = vt.echo_u64;
+            let echo_i64 = vt.echo_i64;
+            let echo_f32 = vt.echo_f32;
+            let echo_f64 = vt.echo_f64;
+
+            std::thread::spawn(move || {
+                let mut pass_count: i32 = 0;
+
+                let mut s = new_cb_status();
+                if (echo_u8)(handle, 200, &mut s) == 200 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                if (echo_i8)(handle, -100, &mut s) == -100 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                if (echo_u16)(handle, 50000, &mut s) == 50000 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                if (echo_i16)(handle, -30000, &mut s) == -30000 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                if (echo_u32)(handle, 3_000_000_000, &mut s) == 3_000_000_000 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                if (echo_i32)(handle, -1_000_000, &mut s) == -1_000_000 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                if (echo_u64)(handle, 0xDEAD_BEEF_CAFE_BABEu64, &mut s) == 0xDEAD_BEEF_CAFE_BABEu64 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                if (echo_i64)(handle, -0x1234_5678_9ABC_DEF0i64, &mut s) == -0x1234_5678_9ABC_DEF0i64 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                let f32_result = (echo_f32)(handle, 2.5f32, &mut s);
+                if (f32_result - 2.5f32).abs() < 0.001 { pass_count += 1; }
+
+                let mut s = new_cb_status();
+                let f64_result = (echo_f64)(handle, 1.23456789012345f64, &mut s);
+                if (f64_result - 1.23456789012345f64).abs() < 1e-10 { pass_count += 1; }
+
+                SCALAR_ECHO_THREAD_RESULT.store(pass_count, Ordering::SeqCst);
+                SCALAR_ECHO_THREAD_DONE.store(true, Ordering::SeqCst);
+            });
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_is_scalar_echo_thread_done(status: &mut RustCallStatus) -> i8 {
+    status.code = 0;
+    if SCALAR_ECHO_THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_get_scalar_echo_thread_result(status: &mut RustCallStatus) -> i32 {
+    status.code = 0;
+    SCALAR_ECHO_THREAD_RESULT.load(Ordering::SeqCst)
+}
