@@ -212,7 +212,7 @@ unsafe fn vtable_trampoline_cross_thread(
     let mut raw_args = Vec::with_capacity(declared_count);
     for (i, desc) in userdata.arg_types.iter().enumerate() {
         let arg_ptr = *args.add(i);
-        let raw_arg = match read_raw_arg(desc, arg_ptr) {
+        let raw_arg = match read_raw_arg(desc, arg_ptr, userdata.rb_free_ptr) {
             Some(a) => a,
             None => return,
         };

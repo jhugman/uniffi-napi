@@ -416,3 +416,31 @@ pub extern "C" fn uniffi_test_fn_is_notify_done(status: &mut RustCallStatus) -> 
     status.code = 0;
     if NOTIFY_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
 }
+
+// --- Cross-thread callback with RustBuffer ---
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_call_callback_with_buffer_from_thread(
+    cb: BufferCallback,
+    handle: u64,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let data_bytes: &[u8] = &[0xCA, 0xFE, 0xBA, 0xBE];
+        let len = data_bytes.len();
+        let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
+        let data = unsafe {
+            let ptr = std::alloc::alloc(layout);
+            ptr::copy_nonoverlapping(data_bytes.as_ptr(), ptr, len);
+            ptr
+        };
+        let buf = RustBuffer {
+            capacity: len as u64,
+            len: len as u64,
+            data,
+        };
+        cb(handle, buf);
+    });
+}

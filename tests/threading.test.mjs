@@ -52,3 +52,39 @@ test('callback: invoked from another thread dispatches to event loop', async () 
   assert.strictEqual(result.handle, 99n);
   assert.strictEqual(result.value, -3);
 });
+
+test('callback: receives RustBuffer arg from another thread', async () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {
+      buffer_callback: {
+        args: [FfiType.UInt64, FfiType.RustBuffer],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+    },
+    functions: {
+      uniffi_test_fn_call_callback_with_buffer_from_thread: {
+        args: [FfiType.Callback('buffer_callback'), FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const result = await new Promise((resolve, reject) => {
+    const callback = (handle, data) => {
+      resolve({ handle, data });
+    };
+    const status = { code: 0 };
+    nm.uniffi_test_fn_call_callback_with_buffer_from_thread(callback, 99n, status);
+    assert.strictEqual(status.code, 0);
+    setTimeout(() => reject(new Error('Timed out')), 5000);
+  });
+
+  assert.strictEqual(result.handle, 99n);
+  assert.ok(result.data instanceof Uint8Array);
+  assert.deepStrictEqual(result.data, new Uint8Array([0xCA, 0xFE, 0xBA, 0xBE]));
+});

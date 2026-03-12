@@ -33,6 +33,7 @@ pub enum RawCallbackArg {
     Int64(i64),
     Float32(f32),
     Float64(f64),
+    RustBuffer(Vec<u8>), // buffer data copied for cross-thread transport
 }
 
 /// Userdata passed to the libffi closure trampoline.
@@ -115,7 +116,7 @@ unsafe fn trampoline_cross_thread(args: *const *const c_void, userdata: &Trampol
     let mut raw_args = Vec::with_capacity(userdata.arg_types.len());
     for (i, desc) in userdata.arg_types.iter().enumerate() {
         let arg_ptr = *args.add(i);
-        let raw_arg = match read_raw_arg(desc, arg_ptr) {
+        let raw_arg = match read_raw_arg(desc, arg_ptr, userdata.rb_free_ptr) {
             Some(a) => a,
             None => return,
         };
@@ -127,7 +128,11 @@ unsafe fn trampoline_cross_thread(args: *const *const c_void, userdata: &Trampol
 }
 
 /// Read a C argument from a raw pointer into a RawCallbackArg.
-pub unsafe fn read_raw_arg(desc: &FfiTypeDesc, arg_ptr: *const c_void) -> Option<RawCallbackArg> {
+pub unsafe fn read_raw_arg(
+    desc: &FfiTypeDesc,
+    arg_ptr: *const c_void,
+    rb_free_ptr: *const c_void,
+) -> Option<RawCallbackArg> {
     match desc {
         FfiTypeDesc::UInt8 => Some(RawCallbackArg::UInt8(*(arg_ptr as *const u8))),
         FfiTypeDesc::Int8 => Some(RawCallbackArg::Int8(*(arg_ptr as *const i8))),
@@ -141,6 +146,29 @@ pub unsafe fn read_raw_arg(desc: &FfiTypeDesc, arg_ptr: *const c_void) -> Option
         FfiTypeDesc::Int64 => Some(RawCallbackArg::Int64(*(arg_ptr as *const i64))),
         FfiTypeDesc::Float32 => Some(RawCallbackArg::Float32(*(arg_ptr as *const f32))),
         FfiTypeDesc::Float64 => Some(RawCallbackArg::Float64(*(arg_ptr as *const f64))),
+        FfiTypeDesc::RustBuffer => {
+            let rb = *(arg_ptr as *const RustBufferC);
+            let len = rb.len as usize;
+
+            // Copy data to Vec for safe cross-thread transport
+            let data = if len > 0 && !rb.data.is_null() {
+                let mut v = vec![0u8; len];
+                std::ptr::copy_nonoverlapping(rb.data, v.as_mut_ptr(), len);
+                v
+            } else {
+                Vec::new()
+            };
+
+            // Free the original RustBuffer — we own the copy now.
+            // rustbuffer_free is a pure C function, safe to call from any thread.
+            if !rb.data.is_null() && rb.capacity > 0 && !rb_free_ptr.is_null() {
+                let free_fn: RustBufferFreeFn = std::mem::transmute(rb_free_ptr);
+                let mut s = RustCallStatusC::default();
+                free_fn(rb, &mut s as *mut _);
+            }
+
+            Some(RawCallbackArg::RustBuffer(data))
+        }
         _ => None,
     }
 }
@@ -158,6 +186,43 @@ pub fn raw_arg_to_js(env: &Env, raw_arg: &RawCallbackArg) -> napi::Result<napi::
         RawCallbackArg::Int64(v) => Ok(env.create_bigint_from_i64(*v)?.into_unknown()?),
         RawCallbackArg::Float32(v) => Ok(env.create_double(*v as f64)?.into_unknown()),
         RawCallbackArg::Float64(v) => Ok(env.create_double(*v)?.into_unknown()),
+        RawCallbackArg::RustBuffer(data) => {
+            let len = data.len();
+            let raw_env = env.raw();
+
+            let mut arraybuffer_data: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut arraybuffer = std::ptr::null_mut();
+            let status = unsafe {
+                napi::sys::napi_create_arraybuffer(
+                    raw_env,
+                    len,
+                    &mut arraybuffer_data,
+                    &mut arraybuffer,
+                )
+            };
+            if status != napi::sys::Status::napi_ok {
+                return Err(napi::Error::from_reason("Failed to create ArrayBuffer"));
+            }
+            if len > 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        arraybuffer_data as *mut u8,
+                        len,
+                    );
+                }
+            }
+
+            let mut typedarray = std::ptr::null_mut();
+            let status = unsafe {
+                napi::sys::napi_create_typedarray(raw_env, 1, len, arraybuffer, 0, &mut typedarray)
+            };
+            if status != napi::sys::Status::napi_ok {
+                return Err(napi::Error::from_reason("Failed to create Uint8Array"));
+            }
+
+            Ok(unsafe { napi::JsUnknown::from_raw(raw_env, typedarray)? })
+        }
     }
 }
 
