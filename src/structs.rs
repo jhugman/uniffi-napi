@@ -110,9 +110,23 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
     args: *const *const c_void,
     userdata: &VTableTrampolineUserdata,
 ) {
+    if !is_main_thread() {
+        // Cross-thread path: serialize args, dispatch to JS thread, wait for result
+        vtable_trampoline_cross_thread(result, args, userdata);
+        return;
+    }
+
+    // Main-thread path: call JS directly (existing behavior)
+    vtable_trampoline_main_thread(result, args, userdata);
+}
+
+unsafe fn vtable_trampoline_main_thread(
+    result: &mut c_void,
+    args: *const *const c_void,
+    userdata: &VTableTrampolineUserdata,
+) {
     let env = Env::from_raw(userdata.raw_env);
 
-    // Get the JS function from the persistent reference
     let mut raw_fn: napi::sys::napi_value = std::ptr::null_mut();
     let status =
         napi::sys::napi_get_reference_value(userdata.raw_env, userdata.fn_ref, &mut raw_fn);
@@ -125,12 +139,9 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
         Err(_) => return,
     };
 
-    // Total C args = declared args + (optional RustCallStatus pointer)
     let declared_count = userdata.arg_types.len();
-
     let mut js_args: Vec<napi::JsUnknown> = Vec::with_capacity(declared_count + 1);
 
-    // Convert declared args to JS
     for (i, desc) in userdata.arg_types.iter().enumerate() {
         let arg_ptr = *args.add(i);
         let js_val = match c_arg_to_js(&env, desc, arg_ptr) {
@@ -140,8 +151,6 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
         js_args.push(js_val);
     }
 
-    // If hasRustCallStatus, the last C arg is a pointer to RustCallStatus.
-    // Create a JS { code: number } object and pass it to the JS function.
     let mut status_ptr: *mut RustCallStatusForVTable = std::ptr::null_mut();
     if userdata.has_rust_call_status {
         let rcs_arg_ptr = *args.add(declared_count);
@@ -166,13 +175,9 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
         js_args.push(js_status.into_unknown());
     }
 
-    // Call the JS function
     let call_result = js_fn.call(None, &js_args);
 
-    // Write back RustCallStatus if applicable
     if userdata.has_rust_call_status && !status_ptr.is_null() {
-        // Read back the code from the last JS arg (the status object)
-        // The JS function may have modified callStatus.code
         if let Some(js_status_unknown) = js_args.last() {
             if let Ok(js_status_obj) = JsObject::from_raw(userdata.raw_env, js_status_unknown.raw())
             {
@@ -183,12 +188,80 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
         }
     }
 
-    // Write return value to the result buffer.
-    // For libffi closures, the result buffer is at least ffi_arg sized.
-    // For integer types smaller than ffi_arg, we write as ffi_arg to ensure
-    // correct behavior across platforms.
     if let Ok(js_ret) = call_result {
         write_return_value(result, &userdata.ret_type, userdata.raw_env, js_ret);
+    }
+}
+
+unsafe fn vtable_trampoline_cross_thread(
+    result: &mut c_void,
+    args: *const *const c_void,
+    userdata: &VTableTrampolineUserdata,
+) {
+    let tsfn = match &userdata.tsfn {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Read C args into portable values
+    let declared_count = userdata.arg_types.len();
+    let mut raw_args = Vec::with_capacity(declared_count);
+    for (i, desc) in userdata.arg_types.iter().enumerate() {
+        let arg_ptr = *args.add(i);
+        let raw_arg = match read_raw_arg(desc, arg_ptr) {
+            Some(a) => a,
+            None => return,
+        };
+        raw_args.push(raw_arg);
+    }
+
+    // Implicit rule: needs_blocking if callback returns a value or has RustCallStatus
+    let needs_blocking =
+        !matches!(userdata.ret_type, FfiTypeDesc::Void) || userdata.has_rust_call_status;
+
+    // Read RustCallStatus code if present
+    let mut status_ptr: *mut RustCallStatusForVTable = std::ptr::null_mut();
+    let rcs_code = if userdata.has_rust_call_status {
+        let rcs_arg_ptr = *args.add(declared_count);
+        status_ptr = *(rcs_arg_ptr as *const *mut RustCallStatusForVTable);
+        if !status_ptr.is_null() {
+            (*status_ptr).code
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    if needs_blocking {
+        // Blocking path: create rendezvous channel, wait for JS thread response
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+
+        let request = VTableCallRequest {
+            args: raw_args,
+            rust_call_status_code: rcs_code,
+            response_tx: Some(tx),
+        };
+
+        tsfn.call(request, ThreadsafeFunctionCallMode::Blocking);
+
+        if let Ok(response) = rx.recv() {
+            if let Some(ref raw_ret) = response.return_value {
+                write_raw_return_value(result, &userdata.ret_type, raw_ret);
+            }
+            if userdata.has_rust_call_status && !status_ptr.is_null() {
+                (*status_ptr).code = response.rust_call_status_code;
+            }
+        }
+    } else {
+        // Non-blocking path: fire-and-forget (e.g. free callbacks)
+        let request = VTableCallRequest {
+            args: raw_args,
+            rust_call_status_code: rcs_code,
+            response_tx: None,
+        };
+
+        tsfn.call(request, ThreadsafeFunctionCallMode::NonBlocking);
     }
 }
 
@@ -275,6 +348,49 @@ unsafe fn write_return_value(
             }
         }
         _ => {} // Unsupported return types silently ignored
+    }
+}
+
+/// Write a RawCallbackArg return value into the libffi result buffer.
+/// Same ffi_arg/ffi_sarg widening rules as write_return_value.
+unsafe fn write_raw_return_value(
+    result: &mut c_void,
+    ret_type: &FfiTypeDesc,
+    raw_ret: &RawCallbackArg,
+) {
+    let result_ptr = result as *mut c_void;
+    match (ret_type, raw_ret) {
+        (FfiTypeDesc::Int8, RawCallbackArg::Int8(v)) => {
+            *(result_ptr as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+        }
+        (FfiTypeDesc::UInt8, RawCallbackArg::UInt8(v)) => {
+            *(result_ptr as *mut low::ffi_arg) = *v as low::ffi_arg;
+        }
+        (FfiTypeDesc::Int16, RawCallbackArg::Int16(v)) => {
+            *(result_ptr as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+        }
+        (FfiTypeDesc::UInt16, RawCallbackArg::UInt16(v)) => {
+            *(result_ptr as *mut low::ffi_arg) = *v as low::ffi_arg;
+        }
+        (FfiTypeDesc::Int32, RawCallbackArg::Int32(v)) => {
+            *(result_ptr as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+        }
+        (FfiTypeDesc::UInt32, RawCallbackArg::UInt32(v)) => {
+            *(result_ptr as *mut low::ffi_arg) = *v as low::ffi_arg;
+        }
+        (FfiTypeDesc::Int64, RawCallbackArg::Int64(v)) => {
+            *(result_ptr as *mut i64) = *v;
+        }
+        (FfiTypeDesc::UInt64 | FfiTypeDesc::Handle, RawCallbackArg::UInt64(v)) => {
+            *(result_ptr as *mut u64) = *v;
+        }
+        (FfiTypeDesc::Float32, RawCallbackArg::Float32(v)) => {
+            *(result_ptr as *mut f32) = *v;
+        }
+        (FfiTypeDesc::Float64, RawCallbackArg::Float64(v)) => {
+            *(result_ptr as *mut f64) = *v;
+        }
+        _ => {} // Type mismatch or void — ignore
     }
 }
 
