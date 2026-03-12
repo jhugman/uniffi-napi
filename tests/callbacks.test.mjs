@@ -412,6 +412,87 @@ test('VTable: callback returns RustBuffer (same-thread)', () => {
   assert.strictEqual(result, 100); // 10+20+30+40
 });
 
+test('VTable: callback returns RustBuffer from another thread', async () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {
+      BufferReturnerVTable: [
+        { name: 'get_data', type: FfiType.Callback('vtable_get_data') },
+        { name: 'free', type: FfiType.Callback('vtable_ret_free') },
+      ],
+    },
+    callbacks: {
+      vtable_get_data: {
+        args: [FfiType.UInt64],
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+      vtable_ret_free: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+    },
+    functions: {
+      uniffi_test_fn_init_buffer_returner_vtable: {
+        args: [FfiType.Reference(FfiType.Struct('BufferReturnerVTable'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_use_buffer_returner_from_thread: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_is_returner_thread_done: {
+        args: [],
+        ret: FfiType.Int8,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_get_returner_thread_result: {
+        args: [],
+        ret: FfiType.Int32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status1 = { code: 0 };
+  nm.uniffi_test_fn_init_buffer_returner_vtable({
+    get_data: (handle, callStatus) => {
+      callStatus.code = 0;
+      return new Uint8Array([5, 10, 15, 20, 25]);
+    },
+    free: (handle, callStatus) => {
+      callStatus.code = 0;
+    },
+  }, status1);
+  assert.strictEqual(status1.code, 0);
+
+  const status2 = { code: 0 };
+  nm.uniffi_test_fn_use_buffer_returner_from_thread(1n, status2);
+  assert.strictEqual(status2.code, 0);
+
+  await new Promise((resolve, reject) => {
+    let attempts = 0;
+    const poll = () => {
+      attempts++;
+      const s = { code: 0 };
+      const done = nm.uniffi_test_fn_is_returner_thread_done(s);
+      if (done === 1) resolve();
+      else if (attempts > 100) reject(new Error('Timed out'));
+      else setImmediate(poll);
+    };
+    setImmediate(poll);
+  });
+
+  const status3 = { code: 0 };
+  const result = nm.uniffi_test_fn_get_returner_thread_result(status3);
+  assert.strictEqual(status3.code, 0);
+  assert.strictEqual(result, 75); // 5+10+15+20+25
+});
+
 test('VTable: callback receives RustBuffer arg from another thread', async () => {
   const lib = openLib();
   const nm = lib.register({

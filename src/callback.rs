@@ -278,6 +278,36 @@ pub fn js_return_to_raw(
                 let num = napi::JsNumber::from_raw(raw_env, js_val.raw()).ok()?;
                 Some(RawCallbackArg::Float64(num.get_double().ok()?))
             }
+            FfiTypeDesc::RustBuffer => {
+                // Read Uint8Array bytes into Vec<u8> for cross-thread transport
+                let raw_val = js_val.raw();
+                let mut length: usize = 0;
+                let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
+                let mut ab = std::ptr::null_mut();
+                let mut byte_offset: usize = 0;
+                let mut ta_type: i32 = 0;
+                let s = napi::sys::napi_get_typedarray_info(
+                    raw_env,
+                    raw_val,
+                    &mut ta_type,
+                    &mut length,
+                    &mut data,
+                    &mut ab,
+                    &mut byte_offset,
+                );
+                if s != napi::sys::Status::napi_ok {
+                    return None;
+                }
+
+                let bytes = if length > 0 && !data.is_null() {
+                    let mut v = vec![0u8; length];
+                    std::ptr::copy_nonoverlapping(data as *const u8, v.as_mut_ptr(), length);
+                    v
+                } else {
+                    Vec::new()
+                };
+                Some(RawCallbackArg::RustBuffer(bytes))
+            }
             _ => None,
         }
     }

@@ -258,7 +258,12 @@ unsafe fn vtable_trampoline_cross_thread(
 
         if let Ok(response) = rx.recv() {
             if let Some(ref raw_ret) = response.return_value {
-                write_raw_return_value(result, &userdata.ret_type, raw_ret);
+                write_raw_return_value(
+                    result,
+                    &userdata.ret_type,
+                    raw_ret,
+                    userdata.rb_from_bytes_ptr,
+                );
             }
             if userdata.has_rust_call_status && !status_ptr.is_null() {
                 (*status_ptr).code = response.rust_call_status_code;
@@ -413,6 +418,7 @@ unsafe fn write_raw_return_value(
     result: &mut c_void,
     ret_type: &FfiTypeDesc,
     raw_ret: &RawCallbackArg,
+    rb_from_bytes_ptr: *const c_void,
 ) {
     let result_ptr = result as *mut c_void;
     match (ret_type, raw_ret) {
@@ -445,6 +451,27 @@ unsafe fn write_raw_return_value(
         }
         (FfiTypeDesc::Float64, RawCallbackArg::Float64(v)) => {
             *(result_ptr as *mut f64) = *v;
+        }
+        (FfiTypeDesc::RustBuffer, RawCallbackArg::RustBuffer(data)) => {
+            if rb_from_bytes_ptr.is_null() {
+                return;
+            }
+
+            // rustbuffer_from_bytes is a pure C function, safe to call from the calling thread.
+            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
+            let foreign = ForeignBytesC {
+                len: data.len() as i32,
+                data: if data.is_empty() {
+                    std::ptr::null()
+                } else {
+                    data.as_ptr()
+                },
+            };
+            let mut call_status = RustCallStatusC::default();
+            let rb = from_bytes(foreign, &mut call_status as *mut _);
+            if call_status.code == 0 {
+                *(result_ptr as *mut RustBufferC) = rb;
+            }
         }
         _ => {} // Type mismatch or void — ignore
     }
