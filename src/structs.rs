@@ -5,14 +5,16 @@ use libffi::low;
 use libffi::middle::{Cif, Closure, Type};
 use napi::{Env, JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
-use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use crate::callback::{c_arg_to_js, js_return_to_raw, raw_arg_to_js, read_raw_arg, CallbackDef, RawCallbackArg};
+use crate::callback::{
+    c_arg_to_js, js_return_to_raw, raw_arg_to_js, read_raw_arg, CallbackDef, RawCallbackArg,
+};
 use crate::cif::ffi_type_for;
 use crate::ffi_type::FfiTypeDesc;
 use crate::is_main_thread;
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 /// Packed arguments for cross-thread VTable callback dispatch.
-struct VTableCallRequest {
+pub(crate) struct VTableCallRequest {
     /// C argument values, read from raw pointers on the calling thread.
     args: Vec<RawCallbackArg>,
     /// If has_rust_call_status, the initial code value from C.
@@ -96,7 +98,7 @@ pub struct VTableTrampolineUserdata {
     pub ret_type: FfiTypeDesc,
     /// Whether the last C arg is a &mut RustCallStatus.
     pub has_rust_call_status: bool,
-    pub tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
+    pub(crate) tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
 }
 
 // Safety: raw_env and raw_fn are only accessed on the main thread.
@@ -395,11 +397,7 @@ unsafe fn write_raw_return_value(
 }
 
 /// Handler that runs on the JS thread when a VTableCallRequest is received via TSF.
-fn vtable_tsfn_handler(
-    env: &Env,
-    userdata: &VTableTrampolineUserdata,
-    request: VTableCallRequest,
-) {
+fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: VTableCallRequest) {
     let send_default = |req: &VTableCallRequest| {
         if let Some(ref tx) = req.response_tx {
             let _ = tx.send(VTableCallResponse {
@@ -583,9 +581,8 @@ pub fn build_vtable_struct(
                 // function with the callback's returned Vec<JsUnknown>. By using a no-op,
                 // the auto-call is harmless — the real JS function is called manually in
                 // vtable_tsfn_handler via fn_ref.
-                let noop_fn = env.create_function_from_closure("vtable_tsfn_noop", |_ctx| {
-                    Ok(())
-                })?;
+                let noop_fn =
+                    env.create_function_from_closure("vtable_tsfn_noop", |_ctx| Ok(()))?;
 
                 // TSF closure captures raw pointer, not &'static ref.
                 // Cast to usize so the closure is Send (raw pointers aren't Send).
