@@ -394,6 +394,115 @@ unsafe fn write_raw_return_value(
     }
 }
 
+/// Handler that runs on the JS thread when a VTableCallRequest is received via TSF.
+fn vtable_tsfn_handler(
+    env: &Env,
+    userdata: &VTableTrampolineUserdata,
+    request: VTableCallRequest,
+) {
+    let send_default = |req: &VTableCallRequest| {
+        if let Some(ref tx) = req.response_tx {
+            let _ = tx.send(VTableCallResponse {
+                return_value: None,
+                rust_call_status_code: req.rust_call_status_code,
+            });
+        }
+    };
+
+    let mut raw_fn: napi::sys::napi_value = std::ptr::null_mut();
+    let status = unsafe {
+        napi::sys::napi_get_reference_value(userdata.raw_env, userdata.fn_ref, &mut raw_fn)
+    };
+    if status != napi::sys::Status::napi_ok || raw_fn.is_null() {
+        send_default(&request);
+        return;
+    }
+
+    let js_fn = match unsafe { napi::JsFunction::from_raw(userdata.raw_env, raw_fn) } {
+        Ok(f) => f,
+        Err(_) => {
+            send_default(&request);
+            return;
+        }
+    };
+
+    let mut js_args: Vec<napi::JsUnknown> = Vec::with_capacity(request.args.len() + 1);
+    for raw_arg in &request.args {
+        match raw_arg_to_js(env, raw_arg) {
+            Ok(v) => js_args.push(v),
+            Err(_) => {
+                send_default(&request);
+                return;
+            }
+        }
+    }
+
+    if userdata.has_rust_call_status {
+        let mut js_status = match env.create_object() {
+            Ok(o) => o,
+            Err(_) => {
+                send_default(&request);
+                return;
+            }
+        };
+        if js_status
+            .set_named_property(
+                "code",
+                env.create_int32(request.rust_call_status_code as i32)
+                    .unwrap(),
+            )
+            .is_err()
+        {
+            send_default(&request);
+            return;
+        }
+        js_args.push(js_status.into_unknown());
+    }
+
+    let call_result = js_fn.call(None, &js_args);
+
+    if request.response_tx.is_none() {
+        return;
+    }
+
+    let rcs_code = if userdata.has_rust_call_status {
+        if let Some(js_status_unknown) = js_args.last() {
+            if let Ok(js_status_obj) =
+                unsafe { JsObject::from_raw(userdata.raw_env, js_status_unknown.raw()) }
+            {
+                js_status_obj
+                    .get_named_property::<i32>("code")
+                    .map(|c| c as i8)
+                    .unwrap_or(request.rust_call_status_code)
+            } else {
+                request.rust_call_status_code
+            }
+        } else {
+            request.rust_call_status_code
+        }
+    } else {
+        0
+    };
+
+    let return_value = match call_result {
+        Ok(js_ret) => {
+            if matches!(userdata.ret_type, FfiTypeDesc::Void) {
+                None
+            } else {
+                js_return_to_raw(env, &userdata.ret_type, js_ret)
+            }
+        }
+        Err(_) => None,
+    };
+
+    if let Some(tx) = request.response_tx {
+        let _ = tx.send(VTableCallResponse {
+            return_value,
+            rust_call_status_code: rcs_code,
+        });
+    }
+}
+
 /// Minimal RustCallStatus layout for reading/writing through VTable callbacks.
 #[repr(C)]
 struct RustCallStatusForVTable {
@@ -463,11 +572,47 @@ pub fn build_vtable_struct(
                     arg_types: cb_def.args.clone(),
                     ret_type: cb_def.ret.clone(),
                     has_rust_call_status: cb_def.has_rust_call_status,
-                    tsfn: None,
+                    tsfn: None, // Will be set below
                 });
 
-                // Leak userdata for stable address
+                // Leak userdata to a raw pointer for stable address.
+                // Do NOT create &'static ref yet — we still need to mutate tsfn.
                 let userdata_ptr = Box::into_raw(userdata);
+
+                // Create a no-op JS function for the TSF base. The TSF auto-calls its base
+                // function with the callback's returned Vec<JsUnknown>. By using a no-op,
+                // the auto-call is harmless — the real JS function is called manually in
+                // vtable_tsfn_handler via fn_ref.
+                let noop_fn = env.create_function_from_closure("vtable_tsfn_noop", |_ctx| {
+                    Ok(())
+                })?;
+
+                // TSF closure captures raw pointer, not &'static ref.
+                // Cast to usize so the closure is Send (raw pointers aren't Send).
+                let tsfn: ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal> = {
+                    let ud_addr = userdata_ptr as usize;
+                    noop_fn.create_threadsafe_function(
+                        0,
+                        move |ctx: napi::threadsafe_function::ThreadSafeCallContext<
+                            VTableCallRequest,
+                        >| {
+                            let ud = unsafe { &*(ud_addr as *const VTableTrampolineUserdata) };
+                            vtable_tsfn_handler(&ctx.env, ud, ctx.value);
+                            Ok(Vec::<napi::JsUnknown>::new())
+                        },
+                    )?
+                };
+
+                // Unref so it doesn't keep the event loop alive
+                let mut tsfn = tsfn;
+                tsfn.unref(env)?;
+
+                // Store TSF in userdata (still using raw pointer, before creating &'static ref)
+                unsafe {
+                    (*userdata_ptr).tsfn = Some(tsfn);
+                }
+
+                // NOW safe to create the &'static reference — all mutations are done
                 let userdata_ref: &'static VTableTrampolineUserdata = unsafe { &*userdata_ptr };
 
                 // Create closure
