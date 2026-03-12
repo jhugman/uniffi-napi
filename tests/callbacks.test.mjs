@@ -357,6 +357,61 @@ test('VTable: callback receives RustBuffer arg (same-thread)', () => {
   assert.strictEqual(result, 15); // 1+2+3+4+5
 });
 
+test('VTable: callback returns RustBuffer (same-thread)', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {
+      BufferReturnerVTable: [
+        { name: 'get_data', type: FfiType.Callback('vtable_get_data') },
+        { name: 'free', type: FfiType.Callback('vtable_ret_free') },
+      ],
+    },
+    callbacks: {
+      vtable_get_data: {
+        args: [FfiType.UInt64],
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+      vtable_ret_free: {
+        args: [FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+    },
+    functions: {
+      uniffi_test_fn_init_buffer_returner_vtable: {
+        args: [FfiType.Reference(FfiType.Struct('BufferReturnerVTable'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: true,
+      },
+      uniffi_test_fn_use_buffer_returner: {
+        args: [FfiType.UInt64],
+        ret: FfiType.UInt32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status1 = { code: 0 };
+  nm.uniffi_test_fn_init_buffer_returner_vtable({
+    get_data: (handle, callStatus) => {
+      callStatus.code = 0;
+      // Return a Uint8Array — should be converted to RustBuffer
+      return new Uint8Array([10, 20, 30, 40]);
+    },
+    free: (handle, callStatus) => {
+      callStatus.code = 0;
+    },
+  }, status1);
+  assert.strictEqual(status1.code, 0);
+
+  const status2 = { code: 0 };
+  const result = nm.uniffi_test_fn_use_buffer_returner(1n, status2);
+  assert.strictEqual(status2.code, 0);
+  assert.strictEqual(result, 100); // 10+20+30+40
+});
+
 test('VTable: callback receives RustBuffer arg from another thread', async () => {
   const lib = openLib();
   const nm = lib.register({

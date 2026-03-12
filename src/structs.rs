@@ -9,6 +9,7 @@ use crate::callback::{
     c_arg_to_js, js_return_to_raw, raw_arg_to_js, read_raw_arg, CallbackDef, RawCallbackArg,
 };
 use crate::cif::ffi_type_for;
+use crate::ffi_c_types::{ForeignBytesC, RustBufferC, RustBufferFromBytesFn, RustCallStatusC};
 use crate::ffi_type::FfiTypeDesc;
 use crate::is_main_thread;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -193,7 +194,13 @@ unsafe fn vtable_trampoline_main_thread(
     }
 
     if let Ok(js_ret) = call_result {
-        write_return_value(result, &userdata.ret_type, userdata.raw_env, js_ret);
+        write_return_value(
+            result,
+            &userdata.ret_type,
+            userdata.raw_env,
+            js_ret,
+            userdata.rb_from_bytes_ptr,
+        );
     }
 }
 
@@ -277,6 +284,7 @@ unsafe fn write_return_value(
     ret_type: &FfiTypeDesc,
     raw_env: napi::sys::napi_env,
     js_ret: napi::JsUnknown,
+    rb_from_bytes_ptr: *const c_void,
 ) {
     let result_ptr = result as *mut c_void;
     match ret_type {
@@ -350,6 +358,50 @@ unsafe fn write_return_value(
                     *(result_ptr as *mut f64) = v;
                 }
             }
+        }
+        FfiTypeDesc::RustBuffer => {
+            // Extract Uint8Array data
+            let raw_val = js_ret.raw();
+            let mut length: usize = 0;
+            let mut data: *mut c_void = std::ptr::null_mut();
+            let mut ab = std::ptr::null_mut();
+            let mut byte_offset: usize = 0;
+            let mut ta_type: i32 = 0;
+            let s = napi::sys::napi_get_typedarray_info(
+                raw_env,
+                raw_val,
+                &mut ta_type,
+                &mut length,
+                &mut data,
+                &mut ab,
+                &mut byte_offset,
+            );
+            if s != napi::sys::Status::napi_ok {
+                return; // Not a typed array — silently fail like other arms
+            }
+
+            // Create ForeignBytes and call rustbuffer_from_bytes
+            if rb_from_bytes_ptr.is_null() {
+                return;
+            }
+            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
+
+            let foreign = ForeignBytesC {
+                len: length as i32,
+                data: if length > 0 {
+                    data as *const u8
+                } else {
+                    std::ptr::null()
+                },
+            };
+            let mut call_status = RustCallStatusC::default();
+            let rb = from_bytes(foreign, &mut call_status as *mut _);
+            if call_status.code != 0 {
+                return;
+            }
+
+            // Write RustBufferC to result buffer
+            *(result_ptr as *mut RustBufferC) = rb;
         }
         _ => {} // Unsupported return types silently ignored
     }
