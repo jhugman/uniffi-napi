@@ -8,17 +8,20 @@ const LIB_PATH = join(import.meta.dirname, '..', 'test_lib', 'target', 'debug',
   process.platform === 'darwin' ? 'libuniffi_napi_test_lib.dylib' : 'libuniffi_napi_test_lib.so'
 );
 
+const SYMBOLS = {
+  rustbufferAlloc: 'uniffi_test_rustbuffer_alloc',
+  rustbufferFree: 'uniffi_test_rustbuffer_free',
+  rustbufferFromBytes: 'uniffi_test_rustbuffer_from_bytes',
+};
+
 function openLib() {
-  return UniffiNativeModule.open(LIB_PATH, {
-    rustbufferAlloc: 'uniffi_test_rustbuffer_alloc',
-    rustbufferFree: 'uniffi_test_rustbuffer_free',
-    rustbufferFromBytes: 'uniffi_test_rustbuffer_from_bytes',
-  });
+  return UniffiNativeModule.open(LIB_PATH);
 }
 
 test('RustBuffer echo: pass Uint8Array, get same bytes back', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {},
     functions: {
@@ -43,6 +46,7 @@ test('RustBuffer echo: pass Uint8Array, get same bytes back', () => {
 test('RustBuffer echo: empty buffer', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {},
     functions: {

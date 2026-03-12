@@ -4,7 +4,7 @@
 
 ## Overview
 
-uniffi-napi exposes two functions: `open()` and `register()`. Your generated code calls `open()` once to load a Rust `.dylib`/`.so`, then `register()` once with a definitions object describing every FFI function, callback, and struct. `register()` returns a plain JS object with pre-compiled callable functions.
+uniffi-napi exposes two methods: `open()` and `register()`. Your generated code calls `open()` once to load a Rust `.dylib`/`.so`, then `register()` once per crate with a definitions object containing the crate's RustBuffer symbols and all its FFI definitions (functions, callbacks, structs). `register()` returns a plain JS object with pre-compiled callable functions. In a megazord setup, one `open()` call is shared across multiple `register()` calls.
 
 **Import pattern:**
 ```javascript
@@ -80,6 +80,11 @@ Return values follow the same type mapping. `FfiType.Void` returns `undefined`.
 
 ```javascript
 module.register({
+  symbols: {   // Per-crate RustBuffer management symbols
+    rustbufferAlloc: 'uniffi_{crate}_rustbuffer_alloc',
+    rustbufferFree: 'uniffi_{crate}_rustbuffer_free',
+    rustbufferFromBytes: 'uniffi_{crate}_rustbuffer_from_bytes',
+  },
   structs: {   // Map<string, Array<FieldDef>>
     ...
   },
@@ -92,7 +97,7 @@ module.register({
 })
 ```
 
-All three keys are required (use `{}` for empty maps).
+All four keys are required (`symbols` must have all three symbol names; use `{}` for empty maps on the others).
 
 ### `functions` — Map of exported C functions
 
@@ -312,13 +317,14 @@ Callback return values are marshaled back to C using the same type mapping. For 
 import lib from 'uniffi-napi/lib.js';
 const { UniffiNativeModule, FfiType } = lib;
 
-const mod = UniffiNativeModule.open(LIBRARY_PATH, {
-  rustbufferAlloc: 'uniffi_mylib_rustbuffer_alloc',
-  rustbufferFree: 'uniffi_mylib_rustbuffer_free',
-  rustbufferFromBytes: 'uniffi_mylib_rustbuffer_from_bytes',
-});
+const mod = UniffiNativeModule.open(LIBRARY_PATH);
 
 const nativeModule = mod.register({
+  symbols: {
+    rustbufferAlloc: 'uniffi_mylib_rustbuffer_alloc',
+    rustbufferFree: 'uniffi_mylib_rustbuffer_free',
+    rustbufferFromBytes: 'uniffi_mylib_rustbuffer_from_bytes',
+  },
   structs: {
     // One entry per VTable struct from ci.ffi_definitions()
     // where definition is FfiDefinition::Struct
@@ -355,4 +361,6 @@ export { nativeModule };
 
 7. **RustBuffer copies data.** When passing a `Uint8Array` as a `RustBuffer` arg, the bytes are copied into Rust-managed memory via `rustbuffer_from_bytes`. When receiving a `RustBuffer` return, the bytes are copied into a new `Uint8Array` and the Rust buffer is freed. There is no shared memory.
 
-8. **Empty `structs`/`callbacks`/`functions` must still be present.** Use `{}` for empty maps. All three keys are required in the definitions object.
+8. **`symbols` is required in every `register()` call.** Each crate has its own RustBuffer symbol names. In a megazord, the library path is shared via `open()` but each `register()` provides its own symbols.
+
+9. **Empty `structs`/`callbacks`/`functions` must still be present.** Use `{}` for empty maps. All keys are required in the definitions object.

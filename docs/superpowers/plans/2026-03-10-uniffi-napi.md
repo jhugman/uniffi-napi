@@ -678,13 +678,8 @@ pub struct UniffiNativeModule {
 #[napi]
 impl UniffiNativeModule {
     #[napi(factory)]
-    pub fn open(path: String, symbols: RustBufferSymbols) -> napi::Result<Self> {
-        let handle = LibraryHandle::open(
-            &path,
-            &symbols.rustbuffer_alloc,
-            &symbols.rustbuffer_free,
-            &symbols.rustbuffer_from_bytes,
-        )?;
+    pub fn open(path: String) -> napi::Result<Self> {
+        let handle = LibraryHandle::open(&path)?;
         Ok(Self {
             handle: Some(handle),
         })

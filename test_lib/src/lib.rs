@@ -1,4 +1,5 @@
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 #[repr(C)]
 pub struct RustBuffer {
@@ -226,4 +227,95 @@ pub extern "C" fn uniffi_test_fn_use_vtable(handle: u64, status: &mut RustCallSt
             -1
         }
     }
+}
+
+// --- Blocking cross-thread test ---
+
+static THREAD_RESULT: AtomicI32 = AtomicI32::new(0);
+static THREAD_DONE: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_use_vtable_from_thread(
+    handle: u64,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    THREAD_DONE.store(false, Ordering::SeqCst);
+    unsafe {
+        if let Some(ref vtable) = STORED_VTABLE {
+            let get_value = vtable.get_value;
+            std::thread::spawn(move || {
+                let mut cb_status = RustCallStatus {
+                    code: 0,
+                    error_buf: RustBuffer {
+                        capacity: 0,
+                        len: 0,
+                        data: std::ptr::null_mut(),
+                    },
+                };
+                let result = (get_value)(handle, &mut cb_status);
+                THREAD_RESULT.store(result, Ordering::SeqCst);
+                THREAD_DONE.store(true, Ordering::SeqCst);
+            });
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_is_thread_done(status: &mut RustCallStatus) -> i8 {
+    status.code = 0;
+    if THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_get_thread_result(status: &mut RustCallStatus) -> i32 {
+    status.code = 0;
+    THREAD_RESULT.load(Ordering::SeqCst)
+}
+
+// --- Non-blocking cross-thread test ---
+
+#[repr(C)]
+pub struct NotifyVTable {
+    pub notify: extern "C" fn(u64),
+}
+
+static mut STORED_NOTIFY_VTABLE: Option<NotifyVTable> = None;
+static NOTIFY_DONE: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_init_notify_vtable(
+    vtable: &NotifyVTable,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    unsafe {
+        STORED_NOTIFY_VTABLE = Some(NotifyVTable {
+            notify: vtable.notify,
+        });
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_notify_from_thread(
+    handle: u64,
+    status: &mut RustCallStatus,
+) {
+    status.code = 0;
+    NOTIFY_DONE.store(false, Ordering::SeqCst);
+    unsafe {
+        if let Some(ref vtable) = STORED_NOTIFY_VTABLE {
+            let notify = vtable.notify;
+            std::thread::spawn(move || {
+                (notify)(handle);
+                NOTIFY_DONE.store(true, Ordering::SeqCst);
+            });
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_is_notify_done(status: &mut RustCallStatus) -> i8 {
+    status.code = 0;
+    if NOTIFY_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
 }

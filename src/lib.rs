@@ -31,13 +31,6 @@ pub fn is_main_thread() -> bool {
         .unwrap_or(false)
 }
 
-#[napi(object)]
-pub struct RustBufferSymbols {
-    pub rustbuffer_alloc: String,
-    pub rustbuffer_free: String,
-    pub rustbuffer_from_bytes: String,
-}
-
 #[napi]
 pub struct UniffiNativeModule {
     handle: Option<LibraryHandle>,
@@ -46,13 +39,8 @@ pub struct UniffiNativeModule {
 #[napi]
 impl UniffiNativeModule {
     #[napi(factory)]
-    pub fn open(path: String, symbols: RustBufferSymbols) -> napi::Result<Self> {
-        let handle = LibraryHandle::open(
-            &path,
-            &symbols.rustbuffer_alloc,
-            &symbols.rustbuffer_free,
-            &symbols.rustbuffer_from_bytes,
-        )?;
+    pub fn open(path: String) -> napi::Result<Self> {
+        let handle = LibraryHandle::open(&path)?;
         Ok(Self {
             handle: Some(handle),
         })

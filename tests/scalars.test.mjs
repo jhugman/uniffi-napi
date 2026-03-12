@@ -8,17 +8,20 @@ const LIB_PATH = join(import.meta.dirname, '..', 'test_lib', 'target', 'debug',
   process.platform === 'darwin' ? 'libuniffi_napi_test_lib.dylib' : 'libuniffi_napi_test_lib.so'
 );
 
+const SYMBOLS = {
+  rustbufferAlloc: 'uniffi_test_rustbuffer_alloc',
+  rustbufferFree: 'uniffi_test_rustbuffer_free',
+  rustbufferFromBytes: 'uniffi_test_rustbuffer_from_bytes',
+};
+
 function openLib() {
-  return UniffiNativeModule.open(LIB_PATH, {
-    rustbufferAlloc: 'uniffi_test_rustbuffer_alloc',
-    rustbufferFree: 'uniffi_test_rustbuffer_free',
-    rustbufferFromBytes: 'uniffi_test_rustbuffer_from_bytes',
-  });
+  return UniffiNativeModule.open(LIB_PATH);
 }
 
 test('register and call i32 add function', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {},
     functions: {
@@ -40,6 +43,7 @@ test('register and call i32 add function', () => {
 test('register and call i8 negate function', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {},
     functions: {
@@ -60,6 +64,7 @@ test('register and call i8 negate function', () => {
 test('register and call u64 handle function', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {},
     functions: {
@@ -80,6 +85,7 @@ test('register and call u64 handle function', () => {
 test('register and call void function', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {},
     functions: {
@@ -101,6 +107,7 @@ test('register and call void function', () => {
 test('register and call f64 double function', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {},
     functions: {

@@ -54,7 +54,40 @@ impl Default for RustCallStatusC {
     }
 }
 
+/// Resolve RustBuffer management symbols from the `symbols` property of the definitions object.
+fn resolve_rustbuffer_symbols(
+    handle: &LibraryHandle,
+    definitions: &JsObject,
+) -> Result<(*const c_void, *const c_void)> {
+    let symbols: JsObject = definitions.get_named_property("symbols")?;
+    let alloc_name: String = symbols
+        .get_named_property::<napi::JsString>("rustbufferAlloc")?
+        .into_utf8()?
+        .as_str()?
+        .to_owned();
+    let free_name: String = symbols
+        .get_named_property::<napi::JsString>("rustbufferFree")?
+        .into_utf8()?
+        .as_str()?
+        .to_owned();
+    let from_bytes_name: String = symbols
+        .get_named_property::<napi::JsString>("rustbufferFromBytes")?
+        .into_utf8()?
+        .as_str()?
+        .to_owned();
+
+    // We only need from_bytes and free at call time; alloc is resolved to validate it exists.
+    let _alloc_ptr = handle.lookup_symbol(&alloc_name)?;
+    let free_ptr = handle.lookup_symbol(&free_name)?;
+    let from_bytes_ptr = handle.lookup_symbol(&from_bytes_name)?;
+
+    Ok((from_bytes_ptr, free_ptr))
+}
+
 pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Result<JsObject> {
+    // Resolve rustbuffer symbols from definitions
+    let (rb_from_bytes_ptr, rb_free_ptr) = resolve_rustbuffer_symbols(handle, &definitions)?;
+
     // Parse callback definitions if present
     let callback_defs = parse_callbacks(&env, &definitions)?;
     let callback_defs = Rc::new(callback_defs);
@@ -111,10 +144,6 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
         let ret_type_clone = ret_type.clone();
         let cb_defs = callback_defs.clone();
         let st_defs = struct_defs.clone();
-
-        // Capture rustbuffer function pointers for RustBuffer arg/ret handling
-        let rb_from_bytes_ptr = handle.rustbuffer_from_bytes;
-        let rb_free_ptr = handle.rustbuffer_free;
 
         let js_func = env.create_function_from_closure(&name, move |ctx| {
             call_ffi_function(

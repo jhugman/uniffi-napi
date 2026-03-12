@@ -8,17 +8,20 @@ const LIB_PATH = join(import.meta.dirname, '..', 'test_lib', 'target', 'debug',
   process.platform === 'darwin' ? 'libuniffi_napi_test_lib.dylib' : 'libuniffi_napi_test_lib.so'
 );
 
+const SYMBOLS = {
+  rustbufferAlloc: 'uniffi_test_rustbuffer_alloc',
+  rustbufferFree: 'uniffi_test_rustbuffer_free',
+  rustbufferFromBytes: 'uniffi_test_rustbuffer_from_bytes',
+};
+
 function openLib() {
-  return UniffiNativeModule.open(LIB_PATH, {
-    rustbufferAlloc: 'uniffi_test_rustbuffer_alloc',
-    rustbufferFree: 'uniffi_test_rustbuffer_free',
-    rustbufferFromBytes: 'uniffi_test_rustbuffer_from_bytes',
-  });
+  return UniffiNativeModule.open(LIB_PATH);
 }
 
 test('callback: same-thread invocation', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {},
     callbacks: {
       simple_callback: {
@@ -55,6 +58,7 @@ test('callback: same-thread invocation', () => {
 test('VTable: register struct with callbacks, call through', () => {
   const lib = openLib();
   const nm = lib.register({
+    symbols: SYMBOLS,
     structs: {
       TestVTable: [
         { name: 'get_value', type: FfiType.Callback('vtable_get_value') },

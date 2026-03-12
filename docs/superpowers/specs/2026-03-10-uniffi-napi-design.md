@@ -53,7 +53,7 @@ Build `uniffi-napi`, a single napi-rs native addon specialized for the UniFFI ca
 ### How the three layers relate
 
 - **uniffi-napi** provides `open()` and `register()`. It handles dlopen, libffi CIF preparation, JS-to-C marshaling, C-to-JS marshaling, and threadsafe callback dispatch.
-- **Generated `*-ffi.ts`** calls `open()` with the library path and rustbuffer symbol names, then `register()` with structs/callbacks/functions from `ci.ffi_definitions()`. It exports the resulting object as the `NativeModuleInterface`.
+- **Generated `*-ffi.ts`** calls `open()` with the library path, then `register()` with per-crate RustBuffer symbols, structs, callbacks, and functions from `ci.ffi_definitions()`. It exports the resulting object as the `NativeModuleInterface`. In a megazord setup, multiple crates share one `open()` call.
 - **Shared ubrn runtime** owns `UniffiRustCaller` (checks RustCallStatus), `uniffiRustCallAsync` (polls Rust futures), `FfiConverter*` (serializes types into RustBuffer), and `callbacks.ts` (foreign trait interface helpers). It calls through the `NativeModuleInterface` without knowing which backend is behind it.
 
 ## API
@@ -63,22 +63,24 @@ Build `uniffi-napi`, a single napi-rs native addon specialized for the UniFFI ca
 ```typescript
 import { UniffiNativeModule } from 'uniffi-napi';
 
-const lib = UniffiNativeModule.open('/path/to/libfoo.dylib', {
-  rustbufferAlloc: 'uniffi_foo_rustbuffer_alloc',
-  rustbufferFree: 'uniffi_foo_rustbuffer_free',
-  rustbufferFromBytes: 'uniffi_foo_rustbuffer_from_bytes',
-});
+const lib = UniffiNativeModule.open('/path/to/libfoo.dylib');
 ```
 
 `open()` is a `#[napi]` function that:
 1. Calls `dlopen` on the target library
-2. Looks up and stores the three rustbuffer management symbols
-3. Returns a `UniffiNativeModule` handle
+2. Returns a `UniffiNativeModule` handle
+
+In a megazord (multi-crate) setup, `open()` is called once and the handle is shared across multiple `register()` calls.
 
 ### register()
 
 ```typescript
 const nativeModule = lib.register({
+  symbols: {
+    rustbufferAlloc: 'uniffi_foo_rustbuffer_alloc',
+    rustbufferFree: 'uniffi_foo_rustbuffer_free',
+    rustbufferFromBytes: 'uniffi_foo_rustbuffer_from_bytes',
+  },
   structs: {
     UniffiRustCallStatus: [
       { name: 'code', type: FfiType.Int8 },
@@ -194,7 +196,7 @@ Based on uniffi_bindgen's `FfiType` enum (uniffi 0.31.x):
 | `UInt64, Int64` | `bigint` | `uint64_t, int64_t` | Always BigInt, no precision loss |
 | `Float32, Float64` | `number` | `float, double` | |
 | `Handle` | `bigint` | `uint64_t` | Opaque object pointers |
-| `RustBuffer(meta)` | `Uint8Array` | struct by value | Module handles alloc/free internally. `meta` carries namespace info; since `open()` binds rustbuffer symbols per-library, `meta` is not needed at runtime. |
+| `RustBuffer(meta)` | `Uint8Array` | struct by value | Module handles alloc/free internally. `meta` carries namespace info; since `register()` binds rustbuffer symbols per-crate, `meta` is not needed at runtime. |
 | `ForeignBytes` | `Uint8Array` | struct by value | Borrowed; napi module holds a `napi::Ref` to prevent GC during the call |
 | `RustCallStatus` | `{ code, errorBuf? }` | via `MutReference` | Module marshals JS object to/from C struct |
 | `Callback(name)` | JS function | C function pointer | Wrapped in ThreadsafeFunction trampoline |

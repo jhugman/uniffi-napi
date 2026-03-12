@@ -11,14 +11,15 @@ import lib from 'uniffi-napi/lib.js';
 const { UniffiNativeModule, FfiType } = lib;
 
 // 1. Open the compiled Rust library
-const mod = UniffiNativeModule.open('./target/debug/libmylib.dylib', {
-  rustbufferAlloc: 'uniffi_mylib_rustbuffer_alloc',
-  rustbufferFree: 'uniffi_mylib_rustbuffer_free',
-  rustbufferFromBytes: 'uniffi_mylib_rustbuffer_from_bytes',
-});
+const mod = UniffiNativeModule.open('./target/debug/libmylib.dylib');
 
-// 2. Register all FFI definitions at once
+// 2. Register all FFI definitions at once (including per-crate RustBuffer symbols)
 const nativeModule = mod.register({
+  symbols: {
+    rustbufferAlloc: 'uniffi_mylib_rustbuffer_alloc',
+    rustbufferFree: 'uniffi_mylib_rustbuffer_free',
+    rustbufferFromBytes: 'uniffi_mylib_rustbuffer_from_bytes',
+  },
   structs: { /* VTable definitions */ },
   callbacks: { /* callback signatures */ },
   functions: { /* all exported functions */ },
@@ -33,34 +34,37 @@ const result = nativeModule.uniffi_mylib_fn_add(3, 4, status);
 
 ## API
 
-### `UniffiNativeModule.open(path, symbols)`
+### `UniffiNativeModule.open(path)`
 
-Opens a native library via `dlopen` and pre-resolves RustBuffer management symbols.
+Opens a native library via `dlopen`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `path` | `string` | Absolute or relative path to the `.dylib` / `.so` file |
-| `symbols.rustbufferAlloc` | `string` | Symbol name for the `rustbuffer_alloc` function |
-| `symbols.rustbufferFree` | `string` | Symbol name for the `rustbuffer_free` function |
-| `symbols.rustbufferFromBytes` | `string` | Symbol name for the `rustbuffer_from_bytes` function |
 
 **Returns:** `UniffiNativeModule` instance.
 
-**Throws:** If the library cannot be opened or any symbol is not found.
+**Throws:** If the library cannot be opened.
 
-The three RustBuffer symbols follow UniFFI's naming convention:
-```
-uniffi_{crate_name}_rustbuffer_alloc
-uniffi_{crate_name}_rustbuffer_free
-uniffi_{crate_name}_rustbuffer_from_bytes
+In a megazord (multi-crate) setup, multiple crates share the same library path. Call `open()` once and call `register()` per crate:
+
+```javascript
+const lib = UniffiNativeModule.open(megazordPath);
+const crate1 = lib.register({ symbols: crate1Symbols, ...crate1Defs });
+const crate2 = lib.register({ symbols: crate2Symbols, ...crate2Defs });
 ```
 
 ### `module.register(definitions)`
 
-Pre-compiles all FFI definitions into callable JavaScript functions. This is called once at module initialization. At call time, there are no string lookups or type resolution.
+Resolves per-crate RustBuffer symbols and pre-compiles all FFI definitions into callable JavaScript functions. This is called once per crate at module initialization. At call time, there are no string lookups or type resolution.
 
 ```typescript
 const nativeModule = module.register({
+  symbols: {
+    rustbufferAlloc: 'uniffi_{crate}_rustbuffer_alloc',
+    rustbufferFree: 'uniffi_{crate}_rustbuffer_free',
+    rustbufferFromBytes: 'uniffi_{crate}_rustbuffer_from_bytes',
+  },
   structs: { ... },
   callbacks: { ... },
   functions: { ... },
@@ -69,7 +73,16 @@ const nativeModule = module.register({
 
 **Returns:** A plain JavaScript object where each key is a function name from `definitions.functions`, and each value is a callable function.
 
-The three sections of the definitions object are described below.
+**Throws:** If any RustBuffer symbol cannot be found in the library.
+
+The RustBuffer symbols follow UniFFI's naming convention:
+```
+uniffi_{crate_name}_rustbuffer_alloc
+uniffi_{crate_name}_rustbuffer_free
+uniffi_{crate_name}_rustbuffer_from_bytes
+```
+
+The sections of the definitions object are described below.
 
 ### `module.close()`
 
@@ -285,22 +298,18 @@ This section describes how a code generator (e.g. uniffi-bindgen-node) should em
 
 ### Step 1: Generate the `open()` call
 
-From the UniFFI component interface, extract the crate name and generate:
+Generate the library open call. In a megazord, this is shared across crates:
 
 ```javascript
 import lib from 'uniffi-napi/lib.js';
 const { UniffiNativeModule, FfiType } = lib;
 
-const mod = UniffiNativeModule.open(libraryPath, {
-  rustbufferAlloc: 'uniffi_{crate}_rustbuffer_alloc',
-  rustbufferFree: 'uniffi_{crate}_rustbuffer_free',
-  rustbufferFromBytes: 'uniffi_{crate}_rustbuffer_from_bytes',
-});
+const mod = UniffiNativeModule.open(libraryPath);
 ```
 
 ### Step 2: Generate the `register()` call
 
-Iterate `ci.ffi_definitions()` from the UniFFI component interface to build the three maps:
+From the UniFFI component interface, extract the crate name for the RustBuffer symbols. Then iterate `ci.ffi_definitions()` to build the definition maps:
 
 #### Structs
 
