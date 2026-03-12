@@ -42,6 +42,9 @@ pub struct TrampolineUserdata {
     pub raw_fn: napi::sys::napi_value,
     pub arg_types: Vec<FfiTypeDesc>,
     pub tsfn: Option<ThreadsafeFunction<Vec<RawCallbackArg>, ErrorStrategy::Fatal>>,
+    /// Pointer to rustbuffer_free. Needed to free RustBuffer args passed to this callback.
+    /// We don't need rb_from_bytes_ptr because simple callbacks never return RustBuffers.
+    pub rb_free_ptr: *const c_void,
 }
 
 // Safety: The ThreadsafeFunction is designed to be used across threads.

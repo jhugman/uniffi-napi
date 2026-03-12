@@ -99,6 +99,8 @@ pub struct VTableTrampolineUserdata {
     /// Whether the last C arg is a &mut RustCallStatus.
     pub has_rust_call_status: bool,
     tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
+    pub rb_from_bytes_ptr: *const c_void,
+    pub rb_free_ptr: *const c_void,
 }
 
 // Safety: raw_env and raw_fn are only accessed on the main thread.
@@ -524,6 +526,8 @@ pub fn build_vtable_struct(
     struct_def: &StructDef,
     js_obj: &JsObject,
     callback_defs: &HashMap<String, CallbackDef>,
+    rb_from_bytes_ptr: *const c_void,
+    rb_free_ptr: *const c_void,
 ) -> Result<*const c_void> {
     let field_count = struct_def.fields.len();
     let mut vtable_data: Vec<*const c_void> = Vec::with_capacity(field_count);
@@ -571,6 +575,8 @@ pub fn build_vtable_struct(
                     ret_type: cb_def.ret.clone(),
                     has_rust_call_status: cb_def.has_rust_call_status,
                     tsfn: None, // Will be set below
+                    rb_from_bytes_ptr,
+                    rb_free_ptr,
                 });
 
                 // Leak userdata to a raw pointer for stable address.

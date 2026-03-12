@@ -227,8 +227,14 @@ fn call_ffi_function(
                 let js_obj = unsafe { JsObject::from_raw(env.raw(), js_val.raw())? };
 
                 // Build the C struct (VTable) from the JS object
-                let struct_ptr =
-                    structs::build_vtable_struct(env, struct_def, &js_obj, callback_defs)?;
+                let struct_ptr = structs::build_vtable_struct(
+                    env,
+                    struct_def,
+                    &js_obj,
+                    callback_defs,
+                    rb_from_bytes_ptr,
+                    rb_free_ptr,
+                )?;
                 struct_ptrs.push(struct_ptr);
 
                 // Placeholder in boxed_args
@@ -271,6 +277,7 @@ fn call_ffi_function(
                     raw_fn,
                     arg_types: cb_def.args.clone(),
                     tsfn: Some(tsfn),
+                    rb_free_ptr,
                 });
 
                 // Build the callback CIF
