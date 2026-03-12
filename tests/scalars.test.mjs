@@ -119,3 +119,87 @@ test('register and call f64 double function', () => {
   const result = nm.uniffi_test_fn_double(3.14, status);
   assert.strictEqual(result, 6.28);
 });
+
+test('register and call f32 half function', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_float32_half: {
+        args: [FfiType.Float32],
+        ret: FfiType.Float32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_float32_half(6.0, status);
+  assert.strictEqual(status.code, 0);
+  assert.ok(Math.abs(result - 3.0) < 0.001);
+});
+
+test('register and call i16 negate function', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_i16_negate: {
+        args: [FfiType.Int16],
+        ret: FfiType.Int16,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_i16_negate(1234, status);
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(result, -1234);
+});
+
+test('register and call u16 double function', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_u16_double: {
+        args: [FfiType.UInt16],
+        ret: FfiType.UInt16,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_u16_double(300, status);
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(result, 600);
+});
+
+test('register and call i64 negate function', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_i64_negate: {
+        args: [FfiType.Int64],
+        ret: FfiType.Int64,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_i64_negate(9007199254740993n, status);
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(result, -9007199254740993n);
+});
