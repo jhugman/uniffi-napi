@@ -5,9 +5,30 @@ use libffi::low;
 use libffi::middle::{Cif, Closure, Type};
 use napi::{Env, JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
-use crate::callback::CallbackDef;
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use crate::callback::{c_arg_to_js, js_return_to_raw, raw_arg_to_js, read_raw_arg, CallbackDef, RawCallbackArg};
 use crate::cif::ffi_type_for;
 use crate::ffi_type::FfiTypeDesc;
+use crate::is_main_thread;
+
+/// Packed arguments for cross-thread VTable callback dispatch.
+struct VTableCallRequest {
+    /// C argument values, read from raw pointers on the calling thread.
+    args: Vec<RawCallbackArg>,
+    /// If has_rust_call_status, the initial code value from C.
+    rust_call_status_code: i8,
+    /// Channel to send the result back to the calling thread.
+    /// None for fire-and-forget (non-blocking) callbacks.
+    response_tx: Option<std::sync::mpsc::SyncSender<VTableCallResponse>>,
+}
+
+/// Result sent back from the JS thread to the calling thread.
+struct VTableCallResponse {
+    /// Return value (using RawCallbackArg for type-safe transport).
+    return_value: Option<RawCallbackArg>,
+    /// Updated RustCallStatus code from JS.
+    rust_call_status_code: i8,
+}
 
 /// A single field in a struct definition.
 #[derive(Debug, Clone)]
@@ -75,6 +96,7 @@ pub struct VTableTrampolineUserdata {
     pub ret_type: FfiTypeDesc,
     /// Whether the last C arg is a &mut RustCallStatus.
     pub has_rust_call_status: bool,
+    pub tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
 }
 
 // Safety: raw_env and raw_fn are only accessed on the main thread.
@@ -111,7 +133,7 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
     // Convert declared args to JS
     for (i, desc) in userdata.arg_types.iter().enumerate() {
         let arg_ptr = *args.add(i);
-        let js_val = match c_arg_to_js_vtable(&env, desc, arg_ptr) {
+        let js_val = match c_arg_to_js(&env, desc, arg_ptr) {
             Ok(v) => v,
             Err(_) => return,
         };
@@ -263,60 +285,6 @@ struct RustCallStatusForVTable {
     // error_buf follows but we don't need to touch it in the trampoline
 }
 
-/// Convert a C argument to a JS value (for VTable trampoline use).
-unsafe fn c_arg_to_js_vtable(
-    env: &Env,
-    desc: &FfiTypeDesc,
-    arg_ptr: *const c_void,
-) -> Result<napi::JsUnknown> {
-    match desc {
-        FfiTypeDesc::UInt8 => {
-            let v = *(arg_ptr as *const u8);
-            Ok(env.create_uint32(v as u32)?.into_unknown())
-        }
-        FfiTypeDesc::Int8 => {
-            let v = *(arg_ptr as *const i8);
-            Ok(env.create_int32(v as i32)?.into_unknown())
-        }
-        FfiTypeDesc::UInt16 => {
-            let v = *(arg_ptr as *const u16);
-            Ok(env.create_uint32(v as u32)?.into_unknown())
-        }
-        FfiTypeDesc::Int16 => {
-            let v = *(arg_ptr as *const i16);
-            Ok(env.create_int32(v as i32)?.into_unknown())
-        }
-        FfiTypeDesc::UInt32 => {
-            let v = *(arg_ptr as *const u32);
-            Ok(env.create_uint32(v)?.into_unknown())
-        }
-        FfiTypeDesc::Int32 => {
-            let v = *(arg_ptr as *const i32);
-            Ok(env.create_int32(v)?.into_unknown())
-        }
-        FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => {
-            let v = *(arg_ptr as *const u64);
-            Ok(env.create_bigint_from_u64(v)?.into_unknown()?)
-        }
-        FfiTypeDesc::Int64 => {
-            let v = *(arg_ptr as *const i64);
-            Ok(env.create_bigint_from_i64(v)?.into_unknown()?)
-        }
-        FfiTypeDesc::Float32 => {
-            let v = *(arg_ptr as *const f32);
-            Ok(env.create_double(v as f64)?.into_unknown())
-        }
-        FfiTypeDesc::Float64 => {
-            let v = *(arg_ptr as *const f64);
-            Ok(env.create_double(v)?.into_unknown())
-        }
-        _ => Err(napi::Error::from_reason(format!(
-            "Unsupported VTable callback arg type: {:?}",
-            desc
-        ))),
-    }
-}
-
 /// Build a C struct (VTable) from a JS object.
 ///
 /// For each field that is a `Callback(name)`:
@@ -379,6 +347,7 @@ pub fn build_vtable_struct(
                     arg_types: cb_def.args.clone(),
                     ret_type: cb_def.ret.clone(),
                     has_rust_call_status: cb_def.has_rust_call_status,
+                    tsfn: None,
                 });
 
                 // Leak userdata for stable address
