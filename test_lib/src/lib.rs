@@ -51,6 +51,30 @@ pub extern "C" fn uniffi_test_fn_double(x: f64, status: &mut RustCallStatus) -> 
     x * 2.0
 }
 
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_float32_half(x: f32, status: &mut RustCallStatus) -> f32 {
+    status.code = 0;
+    x / 2.0
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_i16_negate(x: i16, status: &mut RustCallStatus) -> i16 {
+    status.code = 0;
+    -x
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_u16_double(x: u16, status: &mut RustCallStatus) -> u16 {
+    status.code = 0;
+    x * 2
+}
+
+#[no_mangle]
+pub extern "C" fn uniffi_test_fn_i64_negate(x: i64, status: &mut RustCallStatus) -> i64 {
+    status.code = 0;
+    -x
+}
+
 // --- RustBuffer helpers ---
 
 fn free_buffer(buf: RustBuffer) {
