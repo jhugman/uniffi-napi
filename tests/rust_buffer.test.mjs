@@ -65,3 +65,97 @@ test('RustBuffer echo: empty buffer', () => {
   assert.ok(result instanceof Uint8Array);
   assert.strictEqual(result.length, 0);
 });
+
+test('RustBuffer: large buffer round-trip (1MB)', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_echo_buffer: {
+        args: [FfiType.RustBuffer],
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const input = new Uint8Array(1024 * 1024);
+  for (let i = 0; i < input.length; i++) input[i] = i & 0xFF;
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_echo_buffer(input, status);
+
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(result.length, input.length);
+  assert.deepStrictEqual(result, input);
+});
+
+test('RustBuffer: concat two buffers', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_concat_buffers: {
+        args: [FfiType.RustBuffer, FfiType.RustBuffer],
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const a = new Uint8Array([1, 2, 3]);
+  const b = new Uint8Array([4, 5]);
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_concat_buffers(a, b, status);
+
+  assert.strictEqual(status.code, 0);
+  assert.deepStrictEqual(result, new Uint8Array([1, 2, 3, 4, 5]));
+});
+
+test('RustBuffer: buffer_len returns correct length', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_buffer_len: {
+        args: [FfiType.RustBuffer],
+        ret: FfiType.UInt32,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const input = new Uint8Array([10, 20, 30, 40]);
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_buffer_len(input, status);
+
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(result, 4);
+});
+
+test('RustBuffer: make_buffer creates filled buffer', () => {
+  const lib = openLib();
+  const nm = lib.register({
+    symbols: SYMBOLS,
+    structs: {},
+    callbacks: {},
+    functions: {
+      uniffi_test_fn_make_buffer: {
+        args: [FfiType.UInt8, FfiType.UInt32],
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+    },
+  });
+
+  const status = { code: 0 };
+  const result = nm.uniffi_test_fn_make_buffer(0xAB, 5, status);
+
+  assert.strictEqual(status.code, 0);
+  assert.deepStrictEqual(result, new Uint8Array([0xAB, 0xAB, 0xAB, 0xAB, 0xAB]));
+});
