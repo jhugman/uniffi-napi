@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import { join } from 'node:path';
 import lib from '../lib.js';
 const { UniffiNativeModule, FfiType } = lib;
+import { lowerString, liftString, liftArithmeticError } from './helpers/converters.mjs';
 
 const LIB_PATH = join(import.meta.dirname, '..', 'fixtures', 'uniffi-fixture-simple',
   'target', 'debug',
@@ -26,6 +27,21 @@ function openAndRegister(extraFunctions = {}, extraCallbacks = {}, extraStructs 
     functions: extraFunctions,
   });
 }
+
+test('fixture: greet("World") = "Hello, World!" (sync string)', () => {
+  const nm = openAndRegister({
+    [`uniffi_${CRATE}_fn_func_greet`]: {
+      args: [FfiType.RustBuffer],
+      ret: FfiType.RustBuffer,
+      hasRustCallStatus: true,
+    },
+  });
+
+  const status = { code: 0 };
+  const result = nm[`uniffi_${CRATE}_fn_func_greet`](lowerString('World'), status);
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(liftString(result), 'Hello, World!');
+});
 
 test('fixture: add(3, 4) = 7 (sync scalar)', () => {
   const nm = openAndRegister({

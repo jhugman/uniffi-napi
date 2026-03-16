@@ -1,33 +1,39 @@
 // UniFFI wire-format serialization helpers.
 //
-// UniFFI serializes compound types into RustBuffer using a simple
-// binary format: each value is preceded by a length or tag, all
-// integers are big-endian. These helpers convert between JS values
-// and Uint8Array buffers matching that format.
+// In UniFFI 0.31, top-level function String arguments and return values are
+// stored as raw UTF-8 bytes in a RustBuffer (no length prefix). Strings that
+// appear as *fields* inside compound types (records, enums) continue to use
+// the older 4-byte big-endian i32 length prefix + UTF-8 bytes format.
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Lower a JS string into a Uint8Array matching UniFFI's string wire format:
- * 4-byte big-endian Int32 byte length, followed by UTF-8 bytes.
+ * Lower a JS string into a Uint8Array for use as a top-level UniFFI function
+ * argument (uniffi 0.31+): raw UTF-8 bytes, no length prefix.
  */
 export function lowerString(s) {
-  const encoded = encoder.encode(s);
-  const buf = new Uint8Array(4 + encoded.length);
-  new DataView(buf.buffer).setInt32(0, encoded.length, false);
-  buf.set(encoded, 4);
-  return buf;
+  return encoder.encode(s);
 }
 
 /**
- * Lift a Uint8Array (from a RustBuffer return) into a JS string.
- * Reads: 4-byte big-endian Int32 byte length, then that many UTF-8 bytes.
+ * Lift a Uint8Array (from a top-level UniFFI function return) into a JS string
+ * (uniffi 0.31+): raw UTF-8 bytes, no length prefix.
  */
 export function liftString(buf) {
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const len = view.getInt32(0, false);
-  return decoder.decode(buf.slice(4, 4 + len));
+  return decoder.decode(buf);
+}
+
+/**
+ * Read a length-prefixed string field from a DataView at the given byte offset.
+ * Used for String fields inside compound types (records, enums) which are
+ * serialized as: 4-byte big-endian i32 length, then UTF-8 bytes.
+ * Returns { value: string, nextOffset: number }.
+ */
+function readStringField(view, offset) {
+  const len = view.getInt32(offset, false);
+  const bytes = new Uint8Array(view.buffer, view.byteOffset + offset + 4, len);
+  return { value: decoder.decode(bytes), nextOffset: offset + 4 + len };
 }
 
 /**
@@ -36,11 +42,11 @@ export function liftString(buf) {
  * Returns { variant: number, ...fields }.
  *
  * For ArithmeticError::DivisionByZero { reason: String }:
- *   variant=1, reason=liftString(remaining bytes)
+ *   variant=1, reason=<string field with 4-byte length prefix>
  */
 export function liftArithmeticError(buf) {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const variant = view.getInt32(0, false);
-  const reason = liftString(buf.slice(4));
+  const { value: reason } = readStringField(view, 4);
   return { variant, reason };
 }
