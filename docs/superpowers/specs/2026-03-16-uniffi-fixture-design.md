@@ -61,11 +61,11 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-uniffi = { version = "0.29", features = ["cli"] }
+uniffi = { version = "0.31", features = ["cli"] }
 thiserror = "2"
 ```
 
-**Note on async runtime:** UniFFI's scaffolding manages its own Tokio runtime for polling async functions — we do not need to depend on Tokio directly. If compilation reveals a runtime requirement, we will add it. The `async-trait` crate may also be unnecessary if UniFFI 0.29 handles async traits natively; this will be verified empirically.
+**Note on async runtime:** UniFFI's scaffolding manages its own Tokio runtime for polling async functions — we do not need to depend on Tokio directly. If compilation reveals a runtime requirement, we will add it. The `async-trait` crate may also be unnecessary if UniFFI 0.31 handles async traits natively; this will be verified empirically.
 
 ### src/lib.rs
 
@@ -199,7 +199,7 @@ For async functions, UniFFI also generates per-return-type polling/complete/free
 | Cancel future | `uniffi_uniffi_fixture_simple_rust_future_cancel_u32` (or `_rust_buffer`) |
 | Continuation callback | `uniffi_uniffi_fixture_simple_rust_future_continuation_callback_set` |
 
-**Note:** The exact symbol names will be verified by running `nm -gU` on the compiled dylib after the first build. The names above follow UniFFI 0.29 conventions but may need adjustment.
+**Note:** The exact symbol names will be verified by running `nm -gU` on the compiled dylib after the first build. The names above follow UniFFI 0.31 conventions but may need adjustment.
 
 For callback interfaces, UniFFI generates a VTable init function and a VTable struct:
 
@@ -423,7 +423,7 @@ const nm = lib.register({
 });
 ```
 
-**Note on continuation callback registration:** UniFFI may use either a per-call approach (callback passed as an argument to `poll`) or a global `continuation_callback_set` function. The above assumes per-call. If UniFFI 0.29 uses the global approach, the continuation callback would be registered once via a `continuation_callback_set` function and the poll signature would change. We will verify this empirically.
+**Note on continuation callback registration:** UniFFI may use either a per-call approach (callback passed as an argument to `poll`) or a global `continuation_callback_set` function. The above assumes per-call. If UniFFI 0.31 uses the global approach, the continuation callback would be registered once via a `continuation_callback_set` function and the poll signature would change. We will verify this empirically.
 
 **Note on per-call callback leak:** If the continuation callback is passed per-poll-call as a `FfiType.Callback`, uniffi-napi creates and leaks a new libffi closure each time (by design — see `register.rs`). For short-lived futures that poll once, this is negligible. For long-polling futures, a global registration approach would be preferable. This is a known trade-off that a future optimization can address.
 
@@ -508,7 +508,7 @@ The fixture test is included in the existing `node --test tests/*.test.mjs` glob
 UniFFI's internal symbol naming conventions are not part of its public API. The exact names depend on:
 - The crate name (underscores in `Cargo.toml` `[package].name`)
 - The function/trait/type names
-- UniFFI version (we target 0.29)
+- UniFFI version (we target 0.31)
 
 **Mitigation:** After the first successful build, run `nm -gU` to list all exported symbols and correct any naming mismatches. This is a one-time manual step.
 
