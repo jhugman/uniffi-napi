@@ -88,7 +88,11 @@ fn free_buffer(buf: RustBuffer) {
 fn alloc_rustbuffer(data: &[u8]) -> RustBuffer {
     let len = data.len();
     if len == 0 {
-        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
+        return RustBuffer {
+            capacity: 0,
+            len: 0,
+            data: ptr::null_mut(),
+        };
     }
     let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
     let ptr = unsafe {
@@ -96,13 +100,21 @@ fn alloc_rustbuffer(data: &[u8]) -> RustBuffer {
         ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
         ptr
     };
-    RustBuffer { capacity: len as u64, len: len as u64, data: ptr }
+    RustBuffer {
+        capacity: len as u64,
+        len: len as u64,
+        data: ptr,
+    }
 }
 
 fn new_cb_status() -> RustCallStatus {
     RustCallStatus {
         code: 0,
-        error_buf: RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() },
+        error_buf: RustBuffer {
+            capacity: 0,
+            len: 0,
+            data: ptr::null_mut(),
+        },
     }
 }
 
@@ -136,7 +148,11 @@ pub extern "C" fn uniffi_test_rustbuffer_from_bytes(
 ) -> RustBuffer {
     status.code = 0;
     if bytes.len == 0 || bytes.data.is_null() {
-        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
+        return RustBuffer {
+            capacity: 0,
+            len: 0,
+            data: ptr::null_mut(),
+        };
     }
     let slice = unsafe { std::slice::from_raw_parts(bytes.data, bytes.len as usize) };
     alloc_rustbuffer(slice)
@@ -152,7 +168,11 @@ pub extern "C" fn uniffi_test_fn_echo_buffer(
     status.code = 0;
     let len = buf.len as usize;
     if len == 0 || buf.data.is_null() {
-        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
+        return RustBuffer {
+            capacity: 0,
+            len: 0,
+            data: ptr::null_mut(),
+        };
     }
     let slice = unsafe { std::slice::from_raw_parts(buf.data, len) };
     let new_buf = alloc_rustbuffer(slice);
@@ -187,10 +207,7 @@ pub extern "C" fn uniffi_test_fn_concat_buffers(
 }
 
 #[no_mangle]
-pub extern "C" fn uniffi_test_fn_buffer_len(
-    buf: RustBuffer,
-    status: &mut RustCallStatus,
-) -> u32 {
+pub extern "C" fn uniffi_test_fn_buffer_len(buf: RustBuffer, status: &mut RustCallStatus) -> u32 {
     status.code = 0;
     let len = buf.len as u32;
     free_buffer(buf);
@@ -300,13 +317,14 @@ static THREAD_RESULT: AtomicI32 = AtomicI32::new(0);
 static THREAD_DONE: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
-pub extern "C" fn uniffi_test_fn_use_vtable_from_thread(
-    handle: u64,
-    status: &mut RustCallStatus,
-) {
+pub extern "C" fn uniffi_test_fn_use_vtable_from_thread(handle: u64, status: &mut RustCallStatus) {
     status.code = 0;
     THREAD_DONE.store(false, Ordering::SeqCst);
-    let get_value = STORED_VTABLE.lock().unwrap().as_ref().map(|vt| vt.get_value);
+    let get_value = STORED_VTABLE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|vt| vt.get_value);
     if let Some(get_value) = get_value {
         std::thread::spawn(move || {
             let mut cb_status = new_cb_status();
@@ -320,7 +338,11 @@ pub extern "C" fn uniffi_test_fn_use_vtable_from_thread(
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_is_thread_done(status: &mut RustCallStatus) -> i8 {
     status.code = 0;
-    if THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+    if THREAD_DONE.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -351,13 +373,14 @@ pub extern "C" fn uniffi_test_fn_init_notify_vtable(
 }
 
 #[no_mangle]
-pub extern "C" fn uniffi_test_fn_notify_from_thread(
-    handle: u64,
-    status: &mut RustCallStatus,
-) {
+pub extern "C" fn uniffi_test_fn_notify_from_thread(handle: u64, status: &mut RustCallStatus) {
     status.code = 0;
     NOTIFY_DONE.store(false, Ordering::SeqCst);
-    let notify = STORED_NOTIFY_VTABLE.lock().unwrap().as_ref().map(|vt| vt.notify);
+    let notify = STORED_NOTIFY_VTABLE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|vt| vt.notify);
     if let Some(notify) = notify {
         std::thread::spawn(move || {
             (notify)(handle);
@@ -369,7 +392,11 @@ pub extern "C" fn uniffi_test_fn_notify_from_thread(
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_is_notify_done(status: &mut RustCallStatus) -> i8 {
     status.code = 0;
-    if NOTIFY_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+    if NOTIFY_DONE.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    }
 }
 
 // --- VTable with RustBuffer callback arg ---
@@ -419,7 +446,11 @@ pub extern "C" fn uniffi_test_fn_use_buffer_vtable_from_thread(
 ) {
     status.code = 0;
     BUFFER_THREAD_DONE.store(false, Ordering::SeqCst);
-    let process = STORED_BUFFER_VTABLE.lock().unwrap().as_ref().map(|vt| vt.process);
+    let process = STORED_BUFFER_VTABLE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|vt| vt.process);
     if let Some(process) = process {
         std::thread::spawn(move || {
             let mut cb_status = new_cb_status();
@@ -433,7 +464,11 @@ pub extern "C" fn uniffi_test_fn_use_buffer_vtable_from_thread(
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_is_buffer_thread_done(status: &mut RustCallStatus) -> i8 {
     status.code = 0;
-    if BUFFER_THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+    if BUFFER_THREAD_DONE.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -499,7 +534,11 @@ pub extern "C" fn uniffi_test_fn_use_buffer_returner_from_thread(
 ) {
     status.code = 0;
     RETURNER_THREAD_DONE.store(false, Ordering::SeqCst);
-    let get_data = STORED_BUFFER_RETURNER_VTABLE.lock().unwrap().as_ref().map(|vt| vt.get_data);
+    let get_data = STORED_BUFFER_RETURNER_VTABLE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|vt| vt.get_data);
     if let Some(get_data) = get_data {
         std::thread::spawn(move || {
             let mut cb_status = new_cb_status();
@@ -521,7 +560,11 @@ pub extern "C" fn uniffi_test_fn_use_buffer_returner_from_thread(
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_is_returner_thread_done(status: &mut RustCallStatus) -> i8 {
     status.code = 0;
-    if RETURNER_THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+    if RETURNER_THREAD_DONE.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -572,122 +615,162 @@ pub extern "C" fn uniffi_test_fn_init_scalar_echo_vtable(
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_u8_via_vtable(
-    handle: u64, value: u8, status: &mut RustCallStatus,
+    handle: u64,
+    value: u8,
+    status: &mut RustCallStatus,
 ) -> u8 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_u8)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_i8_via_vtable(
-    handle: u64, value: i8, status: &mut RustCallStatus,
+    handle: u64,
+    value: i8,
+    status: &mut RustCallStatus,
 ) -> i8 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_i8)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_u16_via_vtable(
-    handle: u64, value: u16, status: &mut RustCallStatus,
+    handle: u64,
+    value: u16,
+    status: &mut RustCallStatus,
 ) -> u16 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_u16)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_i16_via_vtable(
-    handle: u64, value: i16, status: &mut RustCallStatus,
+    handle: u64,
+    value: i16,
+    status: &mut RustCallStatus,
 ) -> i16 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_i16)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_u32_via_vtable(
-    handle: u64, value: u32, status: &mut RustCallStatus,
+    handle: u64,
+    value: u32,
+    status: &mut RustCallStatus,
 ) -> u32 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_u32)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_i32_via_vtable(
-    handle: u64, value: i32, status: &mut RustCallStatus,
+    handle: u64,
+    value: i32,
+    status: &mut RustCallStatus,
 ) -> i32 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_i32)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_u64_via_vtable(
-    handle: u64, value: u64, status: &mut RustCallStatus,
+    handle: u64,
+    value: u64,
+    status: &mut RustCallStatus,
 ) -> u64 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_u64)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_i64_via_vtable(
-    handle: u64, value: i64, status: &mut RustCallStatus,
+    handle: u64,
+    value: i64,
+    status: &mut RustCallStatus,
 ) -> i64 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_i64)(handle, value, &mut s)
-    } else { 0 }
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_f32_via_vtable(
-    handle: u64, value: f32, status: &mut RustCallStatus,
+    handle: u64,
+    value: f32,
+    status: &mut RustCallStatus,
 ) -> f32 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_f32)(handle, value, &mut s)
-    } else { 0.0 }
+    } else {
+        0.0
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_echo_f64_via_vtable(
-    handle: u64, value: f64, status: &mut RustCallStatus,
+    handle: u64,
+    value: f64,
+    status: &mut RustCallStatus,
 ) -> f64 {
     status.code = 0;
     let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
     if let Some(vt) = guard.as_ref() {
         let mut s = new_cb_status();
         (vt.echo_f64)(handle, value, &mut s)
-    } else { 0.0 }
+    } else {
+        0.0
+    }
 }
 
 // --- Cross-thread callback with RustBuffer ---
@@ -717,47 +800,88 @@ pub extern "C" fn uniffi_test_fn_echo_all_scalars_via_vtable_from_thread(
     SCALAR_ECHO_THREAD_DONE.store(false, Ordering::SeqCst);
     let fns = {
         let guard = STORED_SCALAR_ECHO_VTABLE.lock().unwrap();
-        guard.as_ref().map(|vt| (
-            vt.echo_u8, vt.echo_i8, vt.echo_u16, vt.echo_i16,
-            vt.echo_u32, vt.echo_i32, vt.echo_u64, vt.echo_i64,
-            vt.echo_f32, vt.echo_f64,
-        ))
+        guard.as_ref().map(|vt| {
+            (
+                vt.echo_u8,
+                vt.echo_i8,
+                vt.echo_u16,
+                vt.echo_i16,
+                vt.echo_u32,
+                vt.echo_i32,
+                vt.echo_u64,
+                vt.echo_i64,
+                vt.echo_f32,
+                vt.echo_f64,
+            )
+        })
     };
-    if let Some((echo_u8, echo_i8, echo_u16, echo_i16, echo_u32, echo_i32, echo_u64, echo_i64, echo_f32, echo_f64)) = fns {
+    if let Some((
+        echo_u8,
+        echo_i8,
+        echo_u16,
+        echo_i16,
+        echo_u32,
+        echo_i32,
+        echo_u64,
+        echo_i64,
+        echo_f32,
+        echo_f64,
+    )) = fns
+    {
         std::thread::spawn(move || {
             let mut pass_count: i32 = 0;
 
             let mut s = new_cb_status();
-            if (echo_u8)(handle, 200, &mut s) == 200 { pass_count += 1; }
+            if (echo_u8)(handle, 200, &mut s) == 200 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
-            if (echo_i8)(handle, -100, &mut s) == -100 { pass_count += 1; }
+            if (echo_i8)(handle, -100, &mut s) == -100 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
-            if (echo_u16)(handle, 50000, &mut s) == 50000 { pass_count += 1; }
+            if (echo_u16)(handle, 50000, &mut s) == 50000 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
-            if (echo_i16)(handle, -30000, &mut s) == -30000 { pass_count += 1; }
+            if (echo_i16)(handle, -30000, &mut s) == -30000 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
-            if (echo_u32)(handle, 3_000_000_000, &mut s) == 3_000_000_000 { pass_count += 1; }
+            if (echo_u32)(handle, 3_000_000_000, &mut s) == 3_000_000_000 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
-            if (echo_i32)(handle, -1_000_000, &mut s) == -1_000_000 { pass_count += 1; }
+            if (echo_i32)(handle, -1_000_000, &mut s) == -1_000_000 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
-            if (echo_u64)(handle, 0xDEAD_BEEF_CAFE_BABEu64, &mut s) == 0xDEAD_BEEF_CAFE_BABEu64 { pass_count += 1; }
+            if (echo_u64)(handle, 0xDEAD_BEEF_CAFE_BABEu64, &mut s) == 0xDEAD_BEEF_CAFE_BABEu64 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
-            if (echo_i64)(handle, -0x1234_5678_9ABC_DEF0i64, &mut s) == -0x1234_5678_9ABC_DEF0i64 { pass_count += 1; }
+            if (echo_i64)(handle, -0x1234_5678_9ABC_DEF0i64, &mut s) == -0x1234_5678_9ABC_DEF0i64 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
             let f32_result = (echo_f32)(handle, 2.5f32, &mut s);
-            if (f32_result - 2.5f32).abs() < 0.001 { pass_count += 1; }
+            if (f32_result - 2.5f32).abs() < 0.001 {
+                pass_count += 1;
+            }
 
             let mut s = new_cb_status();
             let f64_result = (echo_f64)(handle, 1.23456789012345f64, &mut s);
-            if (f64_result - 1.23456789012345f64).abs() < 1e-10 { pass_count += 1; }
+            if (f64_result - 1.23456789012345f64).abs() < 1e-10 {
+                pass_count += 1;
+            }
 
             SCALAR_ECHO_THREAD_RESULT.store(pass_count, Ordering::SeqCst);
             SCALAR_ECHO_THREAD_DONE.store(true, Ordering::SeqCst);
@@ -768,7 +892,11 @@ pub extern "C" fn uniffi_test_fn_echo_all_scalars_via_vtable_from_thread(
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_is_scalar_echo_thread_done(status: &mut RustCallStatus) -> i8 {
     status.code = 0;
-    if SCALAR_ECHO_THREAD_DONE.load(Ordering::SeqCst) { 1 } else { 0 }
+    if SCALAR_ECHO_THREAD_DONE.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]

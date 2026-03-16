@@ -1,24 +1,32 @@
-import { test } from 'node:test';
-import assert from 'node:assert';
-import { join } from 'node:path';
-import lib from '../lib.js';
+import { test } from "node:test";
+import assert from "node:assert";
+import { join } from "node:path";
+import lib from "../lib.js";
 const { UniffiNativeModule, FfiType } = lib;
 
-const LIB_PATH = join(import.meta.dirname, '..', 'fixtures', 'test_lib', 'target', 'debug',
-  process.platform === 'darwin' ? 'libuniffi_napi_test_lib.dylib' : 'libuniffi_napi_test_lib.so'
+const LIB_PATH = join(
+  import.meta.dirname,
+  "..",
+  "fixtures",
+  "test_lib",
+  "target",
+  "debug",
+  process.platform === "darwin"
+    ? "libuniffi_napi_test_lib.dylib"
+    : "libuniffi_napi_test_lib.so",
 );
 
 const SYMBOLS = {
-  rustbufferAlloc: 'uniffi_test_rustbuffer_alloc',
-  rustbufferFree: 'uniffi_test_rustbuffer_free',
-  rustbufferFromBytes: 'uniffi_test_rustbuffer_from_bytes',
+  rustbufferAlloc: "uniffi_test_rustbuffer_alloc",
+  rustbufferFree: "uniffi_test_rustbuffer_free",
+  rustbufferFromBytes: "uniffi_test_rustbuffer_from_bytes",
 };
 
 function openLib() {
   return UniffiNativeModule.open(LIB_PATH);
 }
 
-test('RustCallStatus: error code and errorBuf are written back', () => {
+test("RustCallStatus: error code and errorBuf are written back", () => {
   const lib = openLib();
   const nm = lib.register({
     symbols: SYMBOLS,
@@ -40,10 +48,10 @@ test('RustCallStatus: error code and errorBuf are written back', () => {
   assert.ok(status.errorBuf instanceof Uint8Array);
   assert.strictEqual(status.errorBuf.length, 20); // "something went wrong"
   const msg = new TextDecoder().decode(status.errorBuf);
-  assert.strictEqual(msg, 'something went wrong');
+  assert.strictEqual(msg, "something went wrong");
 });
 
-test('RustCallStatus: success has no errorBuf', () => {
+test("RustCallStatus: success has no errorBuf", () => {
   const lib = openLib();
   const nm = lib.register({
     symbols: SYMBOLS,
