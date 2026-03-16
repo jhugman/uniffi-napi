@@ -1102,6 +1102,7 @@ pub fn build_vtable_struct(
     struct_def: &StructDef,
     js_obj: &JsObject,
     callback_defs: &HashMap<String, CallbackDef>,
+    struct_defs: &HashMap<String, StructDef>,
     rb_from_bytes_ptr: *const c_void,
     rb_free_ptr: *const c_void,
 ) -> Result<*const c_void> {
@@ -1146,7 +1147,7 @@ pub fn build_vtable_struct(
                 let mut cif_arg_types: Vec<Type> = cb_def
                     .args
                     .iter()
-                    .map(|a| ffi_type_for(a, &HashMap::new()))
+                    .map(|a| ffi_type_for(a, struct_defs))
                     .collect();
                 if cb_def.out_return {
                     // Out-return pointer: an extra pointer arg before RustCallStatus
@@ -1160,7 +1161,7 @@ pub fn build_vtable_struct(
                 let cif_ret_type = if cb_def.out_return {
                     Type::void()
                 } else {
-                    ffi_type_for(&cb_def.ret, &HashMap::new())
+                    ffi_type_for(&cb_def.ret, struct_defs)
                 };
                 let cif = Cif::new(cif_arg_types, cif_ret_type);
 

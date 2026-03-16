@@ -8,15 +8,17 @@
 //! The key design insight is that the mapping is surprisingly flat:
 //!
 //! - **Scalars** (`UInt8`..`Float64`, `Handle`) map one-to-one to libffi primitives.
-//! - **`RustBuffer`** is the only pass-by-value struct. Its layout is
+//! - **`RustBuffer`** is a pass-by-value struct. Its layout is
 //!   `{ u64, u64, pointer }` — a three-field `Type::structure`.
+//! - **`Struct(name)`** is a pass-by-value struct whose layout is looked up from
+//!   `struct_defs` at CIF construction time. Each field is recursively mapped via
+//!   `ffi_type_for`, producing a `Type::structure` that matches the C layout.
 //! - **Everything pointer-shaped** — `Reference`, `MutReference`, `Callback`,
 //!   `VoidPointer`, and `RustCallStatus` (always passed as `&mut`) — collapses
 //!   to a single `Type::pointer()` at the ABI level, regardless of what the
 //!   pointer points to.
-//! - **`ForeignBytes`** and bare **`Struct`** are intentionally unsupported:
-//!   they are parseable from JS for completeness but never appear in actual
-//!   UniFFI function signatures.
+//! - **`ForeignBytes`** is intentionally unsupported: it is parseable from JS
+//!   for completeness but never appears in actual UniFFI function signatures.
 
 use std::collections::HashMap;
 
@@ -31,8 +33,8 @@ use crate::structs::StructDef;
 ///
 /// The `struct_defs` parameter is required to resolve `Struct(name)` variants: when a
 /// by-value struct appears in a signature, its field layout must be known to build the
-/// correct `Type::structure`. Pass an empty `HashMap` when no by-value structs are
-/// expected (all existing code paths use pointer-sized types).
+/// correct `Type::structure`. Pass the full struct definitions map from the registration
+/// pipeline so that any by-value struct fields are resolved correctly.
 ///
 /// # Panics
 ///

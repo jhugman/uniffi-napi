@@ -149,12 +149,12 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
         // Build CIF: declared args + optional RustCallStatus pointer
         let mut cif_arg_types: Vec<libffi::middle::Type> = arg_types
             .iter()
-            .map(|t| ffi_type_for(t, &HashMap::new()))
+            .map(|t| ffi_type_for(t, &struct_defs))
             .collect();
         if has_rust_call_status {
             cif_arg_types.push(libffi::middle::Type::pointer());
         }
-        let cif_ret_type = ffi_type_for(&ret_type, &HashMap::new());
+        let cif_ret_type = ffi_type_for(&ret_type, &struct_defs);
         let cif = Cif::new(cif_arg_types, cif_ret_type);
 
         // Wrap in Rc so the closure can own it (single-threaded napi context)
@@ -304,6 +304,7 @@ fn call_ffi_function(
                     struct_def,
                     &js_obj,
                     callback_defs,
+                    struct_defs,
                     rb_from_bytes_ptr,
                     rb_free_ptr,
                 )?;
@@ -357,7 +358,7 @@ fn call_ffi_function(
                 });
 
                 // Build the callback CIF
-                let cb_cif = callback::build_callback_cif(cb_def, &HashMap::new());
+                let cb_cif = callback::build_callback_cif(cb_def, struct_defs);
 
                 // Leak the userdata so it survives beyond this function call.
                 // This is necessary because the callback may be invoked from another
