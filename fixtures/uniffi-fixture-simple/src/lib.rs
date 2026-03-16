@@ -36,3 +36,29 @@ pub async fn async_add(a: u32, b: u32) -> u32 {
 pub async fn async_greet(name: String) -> String {
     format!("Hello, {name}!")
 }
+
+#[uniffi::export(callback_interface)]
+pub trait Calculator: Send + Sync {
+    fn add(&self, a: u32, b: u32) -> u32;
+    fn concatenate(&self, a: String, b: String) -> String;
+}
+
+#[uniffi::export]
+pub fn use_calculator(calc: Box<dyn Calculator>, a: u32, b: u32) -> u32 {
+    calc.add(a, b)
+}
+
+#[uniffi::export]
+pub fn use_calculator_strings(
+    calc: Box<dyn Calculator>,
+    a: String,
+    b: String,
+) -> String {
+    calc.concatenate(a, b)
+}
+
+#[uniffi::export]
+pub async fn use_calculator_from_thread(calc: Box<dyn Calculator>, a: u32, b: u32) -> u32 {
+    let handle = tokio::runtime::Handle::current();
+    handle.spawn_blocking(move || calc.add(a, b)).await.unwrap()
+}
