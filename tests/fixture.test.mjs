@@ -351,3 +351,106 @@ test('fixture: async_greet("World") = "Hello, World!" (async string)', async () 
 
   assert.strictEqual(result, 'Hello, World!');
 });
+
+// TODO: AsyncFetcher foreign trait test (async callback)
+//
+// This test exercises UniFFI's "foreign future" protocol for async foreign traits.
+// The AsyncFetcher trait has one async method:
+//
+//   #[uniffi::export(with_foreign)]
+//   #[async_trait]
+//   pub trait AsyncFetcher: Send + Sync {
+//       async fn fetch(&self, input: String) -> String;
+//   }
+//
+// The generated VTable struct for AsyncFetcher has this C layout:
+//
+//   struct VTable_AsyncFetcher {
+//       uniffi_free:  extern "C" fn(handle: u64),
+//       uniffi_clone: extern "C" fn(handle: u64) -> u64,
+//       fetch:        extern "C" fn(
+//                         handle: u64,
+//                         input: RustBuffer,
+//                         complete_callback: ForeignFutureCallback<RustBuffer>,
+//                         complete_callback_data: u64,
+//                         out_dropped_callback: &mut ForeignFutureDroppedCallbackStruct,
+//                     ),
+//   }
+//
+// The foreign future protocol works as follows:
+// 1. Rust calls `vtable.fetch(handle, input, complete_cb, complete_data, &mut dropped_cb)`
+// 2. JS performs the async work and, when done, calls `complete_cb(complete_data, result)`
+//    where `result` is a ForeignFutureResult<RustBuffer>:
+//      struct ForeignFutureResult<RustBuffer> {
+//          return_value: RustBuffer,    // the serialized return value
+//          call_status: RustCallStatus, // {code: i8, error_buf: RustBuffer}
+//      }
+// 3. Optionally, JS writes a {callback_data: u64, callback: fn(u64)} into out_dropped_callback
+//    so Rust can notify JS if the future is cancelled.
+//
+// Infrastructure gaps that prevent this test from working today:
+//
+// 1. ForeignFutureCallback: The `complete_callback` parameter is a function pointer
+//    (extern "C" fn) that Rust passes INTO the JS callback. The JS side needs to be
+//    able to *call* this function pointer later. Currently, callback args of type
+//    "Callback" create libffi closures (JS->C direction), but here we need the
+//    reverse: receive a C function pointer and call it from JS with a struct argument.
+//    This requires a new mechanism — e.g., a way to invoke a raw C function pointer
+//    from JS, passing a ForeignFutureResult struct by value.
+//
+// 2. ForeignFutureResult struct by value: The complete_callback takes a
+//    ForeignFutureResult<RustBuffer> as a by-value struct argument (not a pointer).
+//    This struct contains {RustBuffer, RustCallStatus} which is
+//    {RustBuffer, {i8, RustBuffer}}. Passing structs by value to C function pointers
+//    requires libffi struct type construction, which is not yet exposed to JS.
+//
+// 3. ForeignFutureDroppedCallbackStruct out-pointer: The `out_dropped_callback`
+//    parameter is a mutable reference to a struct {u64, fn(u64)}. The JS callback
+//    needs to write fields (including a function pointer) into this struct through
+//    the pointer. The current trampoline reads args but does not support writing
+//    to out-pointer struct fields that contain function pointers.
+//
+// To implement this, uniffi-napi would need:
+// - A "ForeignFutureCallback" FfiType that represents a C function pointer received
+//   as an argument, which JS can later invoke via a helper (e.g., nm.callFnPtr()).
+// - Support for constructing and passing C structs by value when calling function
+//   pointers (for ForeignFutureResult).
+// - Support for writing to mutable struct out-pointers from JS (for the dropped
+//   callback struct).
+//
+test('fixture: AsyncFetcher (async foreign trait)', { skip: 'Requires foreign future protocol support in uniffi-napi — see TODO comments above' }, () => {
+  // When the infrastructure is ready, the test would look roughly like:
+  //
+  // const nm = openAndRegister(
+  //   {
+  //     [`uniffi_${CRATE}_fn_init_callback_vtable_asyncfetcher`]: {
+  //       args: [FfiType.Reference(FfiType.Struct('VTable_AsyncFetcher'))],
+  //       ret: FfiType.Void,
+  //       hasRustCallStatus: false,
+  //     },
+  //     [`uniffi_${CRATE}_fn_func_use_async_fetcher`]: {
+  //       args: [FfiType.UInt64, FfiType.RustBuffer],
+  //       ret: FfiType.Handle,
+  //       hasRustCallStatus: true,
+  //     },
+  //     // ... rust_future_poll/complete/free for RustBuffer ...
+  //   },
+  //   { /* callback defs for fetch, free, clone */ },
+  //   { /* struct defs for VTable_AsyncFetcher, ForeignFutureResult */ },
+  // );
+  //
+  // // Register VTable where fetch callback:
+  // // 1. Receives (handle, inputBuf, completeCbPtr, completeCbData, droppedCbOutPtr)
+  // // 2. Lifts inputBuf to get the input string
+  // // 3. Computes the result (e.g., "fetched: " + input)
+  // // 4. Calls completeCbPtr(completeCbData, {return_value: lowerString(result), call_status: {code: 0}})
+  // nm[`uniffi_${CRATE}_fn_init_callback_vtable_asyncfetcher`](vtableImpl);
+  //
+  // const result = await uniffiRustCallAsync(nm, {
+  //   rustFutureFunc: () => nm[`uniffi_${CRATE}_fn_func_use_async_fetcher`](1n, lowerString('hello'), status),
+  //   pollFunc: ..., completeFunc: ..., freeFunc: ...,
+  //   liftFunc: liftString,
+  // });
+  //
+  // assert.strictEqual(result, 'fetched: hello');
+});
