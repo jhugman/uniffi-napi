@@ -135,3 +135,47 @@ test('fixture: async_add(3, 4) = 7 (async scalar)', async () => {
 
   assert.strictEqual(result, 7);
 });
+
+test('fixture: async_greet("World") = "Hello, World!" (async string)', async () => {
+  const nm = openAndRegister({
+    [`uniffi_${CRATE}_fn_func_async_greet`]: {
+      args: [FfiType.RustBuffer],
+      ret: FfiType.Handle,
+      hasRustCallStatus: true,
+    },
+    [`ffi_${CRATE}_rust_future_poll_rust_buffer`]: {
+      args: [FfiType.Handle, FfiType.Callback('rust_future_continuation'), FfiType.UInt64],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+    [`ffi_${CRATE}_rust_future_complete_rust_buffer`]: {
+      args: [FfiType.Handle],
+      ret: FfiType.RustBuffer,
+      hasRustCallStatus: true,
+    },
+    [`ffi_${CRATE}_rust_future_free_rust_buffer`]: {
+      args: [FfiType.Handle],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+  }, {
+    rust_future_continuation: {
+      args: [FfiType.UInt64, FfiType.Int8],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+  });
+
+  const result = await uniffiRustCallAsync(nm, {
+    rustFutureFunc: () => {
+      const status = { code: 0 };
+      return nm[`uniffi_${CRATE}_fn_func_async_greet`](lowerString('World'), status);
+    },
+    pollFunc: `ffi_${CRATE}_rust_future_poll_rust_buffer`,
+    completeFunc: `ffi_${CRATE}_rust_future_complete_rust_buffer`,
+    freeFunc: `ffi_${CRATE}_rust_future_free_rust_buffer`,
+    liftFunc: liftString,
+  });
+
+  assert.strictEqual(result, 'Hello, World!');
+});
