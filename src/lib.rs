@@ -48,6 +48,7 @@ mod callback;
 mod cif;
 mod ffi_c_types;
 mod ffi_type;
+mod fn_pointer;
 mod library;
 mod marshal;
 mod napi_utils;
