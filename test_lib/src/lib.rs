@@ -85,6 +85,27 @@ fn free_buffer(buf: RustBuffer) {
     }
 }
 
+fn alloc_rustbuffer(data: &[u8]) -> RustBuffer {
+    let len = data.len();
+    if len == 0 {
+        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
+    }
+    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
+    let ptr = unsafe {
+        let ptr = std::alloc::alloc(layout);
+        ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
+        ptr
+    };
+    RustBuffer { capacity: len as u64, len: len as u64, data: ptr }
+}
+
+fn new_cb_status() -> RustCallStatus {
+    RustCallStatus {
+        code: 0,
+        error_buf: RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() },
+    }
+}
+
 // --- RustBuffer management ---
 
 #[no_mangle]
@@ -114,25 +135,11 @@ pub extern "C" fn uniffi_test_rustbuffer_from_bytes(
     status: &mut RustCallStatus,
 ) -> RustBuffer {
     status.code = 0;
-    let len = bytes.len as usize;
-    if len == 0 || bytes.data.is_null() {
-        return RustBuffer {
-            capacity: 0,
-            len: 0,
-            data: ptr::null_mut(),
-        };
+    if bytes.len == 0 || bytes.data.is_null() {
+        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
     }
-    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-    let data = unsafe {
-        let ptr = std::alloc::alloc(layout);
-        ptr::copy_nonoverlapping(bytes.data, ptr, len);
-        ptr
-    };
-    RustBuffer {
-        capacity: len as u64,
-        len: len as u64,
-        data,
-    }
+    let slice = unsafe { std::slice::from_raw_parts(bytes.data, bytes.len as usize) };
+    alloc_rustbuffer(slice)
 }
 
 // --- RustBuffer echo (takes buffer, returns same bytes) ---
@@ -145,24 +152,12 @@ pub extern "C" fn uniffi_test_fn_echo_buffer(
     status.code = 0;
     let len = buf.len as usize;
     if len == 0 || buf.data.is_null() {
-        return RustBuffer {
-            capacity: 0,
-            len: 0,
-            data: ptr::null_mut(),
-        };
+        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
     }
-    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-    let new_data = unsafe {
-        let ptr = std::alloc::alloc(layout);
-        ptr::copy_nonoverlapping(buf.data, ptr, len);
-        ptr
-    };
+    let slice = unsafe { std::slice::from_raw_parts(buf.data, len) };
+    let new_buf = alloc_rustbuffer(slice);
     free_buffer(buf);
-    RustBuffer {
-        capacity: len as u64,
-        len: len as u64,
-        data: new_data,
-    }
+    new_buf
 }
 
 // --- RustBuffer multi-arg and utility functions ---
@@ -176,30 +171,19 @@ pub extern "C" fn uniffi_test_fn_concat_buffers(
     status.code = 0;
     let len1 = buf1.len as usize;
     let len2 = buf2.len as usize;
-    let total = len1 + len2;
 
-    if total == 0 {
-        free_buffer(buf1);
-        free_buffer(buf2);
-        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
+    // Collect bytes from both buffers, then free originals
+    let mut combined = Vec::with_capacity(len1 + len2);
+    if len1 > 0 && !buf1.data.is_null() {
+        combined.extend_from_slice(unsafe { std::slice::from_raw_parts(buf1.data, len1) });
     }
-
-    let layout = std::alloc::Layout::from_size_align(total, 1).unwrap();
-    let data = unsafe {
-        let ptr = std::alloc::alloc(layout);
-        if len1 > 0 && !buf1.data.is_null() {
-            ptr::copy_nonoverlapping(buf1.data, ptr, len1);
-        }
-        if len2 > 0 && !buf2.data.is_null() {
-            ptr::copy_nonoverlapping(buf2.data, ptr.add(len1), len2);
-        }
-        ptr
-    };
-
+    if len2 > 0 && !buf2.data.is_null() {
+        combined.extend_from_slice(unsafe { std::slice::from_raw_parts(buf2.data, len2) });
+    }
     free_buffer(buf1);
     free_buffer(buf2);
 
-    RustBuffer { capacity: total as u64, len: total as u64, data }
+    alloc_rustbuffer(&combined)
 }
 
 #[no_mangle]
@@ -220,37 +204,16 @@ pub extern "C" fn uniffi_test_fn_make_buffer(
     status: &mut RustCallStatus,
 ) -> RustBuffer {
     status.code = 0;
-    let len = count as usize;
-    if len == 0 {
-        return RustBuffer { capacity: 0, len: 0, data: ptr::null_mut() };
-    }
-    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-    let data = unsafe {
-        let ptr = std::alloc::alloc(layout);
-        ptr::write_bytes(ptr, value, len);
-        ptr
-    };
-    RustBuffer { capacity: len as u64, len: len as u64, data }
+    let data = vec![value; count as usize];
+    alloc_rustbuffer(&data)
 }
 
 // --- Error-producing function ---
 
 #[no_mangle]
 pub extern "C" fn uniffi_test_fn_error(status: &mut RustCallStatus) -> i32 {
-    let msg = b"something went wrong";
-    let len = msg.len();
-    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-    let data = unsafe {
-        let ptr = std::alloc::alloc(layout);
-        ptr::copy_nonoverlapping(msg.as_ptr(), ptr, len);
-        ptr
-    };
     status.code = 2; // CALL_UNEXPECTED_ERROR
-    status.error_buf = RustBuffer {
-        capacity: len as u64,
-        len: len as u64,
-        data,
-    };
+    status.error_buf = alloc_rustbuffer(b"something went wrong");
     0
 }
 
@@ -280,22 +243,8 @@ pub extern "C" fn uniffi_test_fn_call_callback_with_buffer(
     status: &mut RustCallStatus,
 ) {
     status.code = 0;
-    // Create a buffer with known content [0xDE, 0xAD, 0xBE, 0xEF]
-    let data_bytes: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
-    let len = data_bytes.len();
-    let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-    let data = unsafe {
-        let ptr = std::alloc::alloc(layout);
-        ptr::copy_nonoverlapping(data_bytes.as_ptr(), ptr, len);
-        ptr
-    };
-    let buf = RustBuffer {
-        capacity: len as u64,
-        len: len as u64,
-        data,
-    };
-    cb(handle, buf);
     // Callback takes ownership of the buffer — do NOT free here
+    cb(handle, alloc_rustbuffer(&[0xDE, 0xAD, 0xBE, 0xEF]));
 }
 
 // --- Callback from another thread ---
@@ -338,10 +287,7 @@ pub extern "C" fn uniffi_test_fn_use_vtable(handle: u64, status: &mut RustCallSt
     status.code = 0;
     let guard = STORED_VTABLE.lock().unwrap();
     if let Some(vtable) = guard.as_ref() {
-        let mut cb_status = RustCallStatus {
-            code: 0,
-            error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
-        };
+        let mut cb_status = new_cb_status();
         (vtable.get_value)(handle, &mut cb_status)
     } else {
         -1
@@ -363,14 +309,7 @@ pub extern "C" fn uniffi_test_fn_use_vtable_from_thread(
     let get_value = STORED_VTABLE.lock().unwrap().as_ref().map(|vt| vt.get_value);
     if let Some(get_value) = get_value {
         std::thread::spawn(move || {
-            let mut cb_status = RustCallStatus {
-                code: 0,
-                error_buf: RustBuffer {
-                    capacity: 0,
-                    len: 0,
-                    data: std::ptr::null_mut(),
-                },
-            };
+            let mut cb_status = new_cb_status();
             let result = (get_value)(handle, &mut cb_status);
             THREAD_RESULT.store(result, Ordering::SeqCst);
             THREAD_DONE.store(true, Ordering::SeqCst);
@@ -463,18 +402,8 @@ pub extern "C" fn uniffi_test_fn_use_buffer_vtable(
     status.code = 0;
     let guard = STORED_BUFFER_VTABLE.lock().unwrap();
     if let Some(vtable) = guard.as_ref() {
-        let data_bytes: &[u8] = &[1, 2, 3, 4, 5];
-        let len = data_bytes.len();
-        let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-        let data = unsafe { std::alloc::alloc(layout) };
-        unsafe { ptr::copy_nonoverlapping(data_bytes.as_ptr(), data, len) };
-        let buf = RustBuffer { capacity: len as u64, len: len as u64, data };
-
-        let mut cb_status = RustCallStatus {
-            code: 0,
-            error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
-        };
-        (vtable.process)(handle, buf, &mut cb_status)
+        let mut cb_status = new_cb_status();
+        (vtable.process)(handle, alloc_rustbuffer(&[1, 2, 3, 4, 5]), &mut cb_status)
     } else {
         0
     }
@@ -493,18 +422,8 @@ pub extern "C" fn uniffi_test_fn_use_buffer_vtable_from_thread(
     let process = STORED_BUFFER_VTABLE.lock().unwrap().as_ref().map(|vt| vt.process);
     if let Some(process) = process {
         std::thread::spawn(move || {
-            let data_bytes: &[u8] = &[10, 20, 30];
-            let len = data_bytes.len();
-            let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-            let data = unsafe { std::alloc::alloc(layout) };
-            unsafe { ptr::copy_nonoverlapping(data_bytes.as_ptr(), data, len) };
-            let buf = RustBuffer { capacity: len as u64, len: len as u64, data };
-
-            let mut cb_status = RustCallStatus {
-                code: 0,
-                error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
-            };
-            let result = (process)(handle, buf, &mut cb_status);
+            let mut cb_status = new_cb_status();
+            let result = (process)(handle, alloc_rustbuffer(&[10, 20, 30]), &mut cb_status);
             BUFFER_THREAD_RESULT.store(result as i32, Ordering::SeqCst);
             BUFFER_THREAD_DONE.store(true, Ordering::SeqCst);
         });
@@ -554,10 +473,7 @@ pub extern "C" fn uniffi_test_fn_use_buffer_returner(
     status.code = 0;
     let guard = STORED_BUFFER_RETURNER_VTABLE.lock().unwrap();
     if let Some(vtable) = guard.as_ref() {
-        let mut cb_status = RustCallStatus {
-            code: 0,
-            error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
-        };
+        let mut cb_status = new_cb_status();
         let buf = (vtable.get_data)(handle, &mut cb_status);
         let len = buf.len as usize;
         let mut sum: u32 = 0;
@@ -586,10 +502,7 @@ pub extern "C" fn uniffi_test_fn_use_buffer_returner_from_thread(
     let get_data = STORED_BUFFER_RETURNER_VTABLE.lock().unwrap().as_ref().map(|vt| vt.get_data);
     if let Some(get_data) = get_data {
         std::thread::spawn(move || {
-            let mut cb_status = RustCallStatus {
-                code: 0,
-                error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
-            };
+            let mut cb_status = new_cb_status();
             let buf = (get_data)(handle, &mut cb_status);
             let len = buf.len as usize;
             let mut sum: u32 = 0;
@@ -655,13 +568,6 @@ pub extern "C" fn uniffi_test_fn_init_scalar_echo_vtable(
         echo_f64: vtable.echo_f64,
         free: vtable.free,
     });
-}
-
-fn new_cb_status() -> RustCallStatus {
-    RustCallStatus {
-        code: 0,
-        error_buf: RustBuffer { capacity: 0, len: 0, data: std::ptr::null_mut() },
-    }
 }
 
 #[no_mangle]
@@ -795,20 +701,7 @@ pub extern "C" fn uniffi_test_fn_call_callback_with_buffer_from_thread(
     status.code = 0;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(10));
-        let data_bytes: &[u8] = &[0xCA, 0xFE, 0xBA, 0xBE];
-        let len = data_bytes.len();
-        let layout = std::alloc::Layout::from_size_align(len, 1).unwrap();
-        let data = unsafe {
-            let ptr = std::alloc::alloc(layout);
-            ptr::copy_nonoverlapping(data_bytes.as_ptr(), ptr, len);
-            ptr
-        };
-        let buf = RustBuffer {
-            capacity: len as u64,
-            len: len as u64,
-            data,
-        };
-        cb(handle, buf);
+        cb(handle, alloc_rustbuffer(&[0xCA, 0xFE, 0xBA, 0xBE]));
     });
 }
 

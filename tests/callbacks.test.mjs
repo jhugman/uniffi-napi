@@ -18,6 +18,19 @@ function openLib() {
   return UniffiNativeModule.open(LIB_PATH);
 }
 
+function pollUntil(checkFn, timeoutMsg = 'Timed out polling', maxAttempts = 100) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const poll = () => {
+      attempts++;
+      if (checkFn()) resolve();
+      else if (attempts > maxAttempts) reject(new Error(timeoutMsg));
+      else setImmediate(poll);
+    };
+    setImmediate(poll);
+  });
+}
+
 test('callback: same-thread invocation', () => {
   const lib = openLib();
   const nm = lib.register({
@@ -211,22 +224,8 @@ test('VTable: callback invoked from another thread returns value', async () => {
   assert.strictEqual(status2.code, 0);
 
   // Yield to event loop so TSF callback can fire, then poll for completion
-  await new Promise((resolve, reject) => {
-    let attempts = 0;
-    const poll = () => {
-      attempts++;
-      const pollStatus = { code: 0 };
-      const done = nm.uniffi_test_fn_is_thread_done(pollStatus);
-      if (done === 1) {
-        resolve();
-      } else if (attempts > 100) {
-        reject(new Error('Timed out waiting for cross-thread VTable callback'));
-      } else {
-        setImmediate(poll);
-      }
-    };
-    setImmediate(poll);
-  });
+  await pollUntil(() => nm.uniffi_test_fn_is_thread_done({ code: 0 }) === 1,
+    'Timed out waiting for cross-thread VTable callback');
 
   // Check the result
   const status3 = { code: 0 };
@@ -281,20 +280,8 @@ test('VTable: non-blocking callback invoked from another thread (fire-and-forget
   assert.strictEqual(status2.code, 0);
 
   // Poll on the JS-side effect directly (not the Rust-side NOTIFY_DONE flag).
-  await new Promise((resolve, reject) => {
-    let attempts = 0;
-    const poll = () => {
-      attempts++;
-      if (notifiedHandle !== null) {
-        resolve();
-      } else if (attempts > 100) {
-        reject(new Error('Timed out waiting for non-blocking VTable callback'));
-      } else {
-        setImmediate(poll);
-      }
-    };
-    setImmediate(poll);
-  });
+  await pollUntil(() => notifiedHandle !== null,
+    'Timed out waiting for non-blocking VTable callback');
 
   assert.strictEqual(notifiedHandle, 42n);
 });
@@ -474,18 +461,7 @@ test('VTable: callback returns RustBuffer from another thread', async () => {
   nm.uniffi_test_fn_use_buffer_returner_from_thread(1n, status2);
   assert.strictEqual(status2.code, 0);
 
-  await new Promise((resolve, reject) => {
-    let attempts = 0;
-    const poll = () => {
-      attempts++;
-      const s = { code: 0 };
-      const done = nm.uniffi_test_fn_is_returner_thread_done(s);
-      if (done === 1) resolve();
-      else if (attempts > 100) reject(new Error('Timed out'));
-      else setImmediate(poll);
-    };
-    setImmediate(poll);
-  });
+  await pollUntil(() => nm.uniffi_test_fn_is_returner_thread_done({ code: 0 }) === 1);
 
   const status3 = { code: 0 };
   const result = nm.uniffi_test_fn_get_returner_thread_result(status3);
@@ -558,18 +534,7 @@ test('VTable: callback receives RustBuffer arg from another thread', async () =>
   nm.uniffi_test_fn_use_buffer_vtable_from_thread(1n, status2);
   assert.strictEqual(status2.code, 0);
 
-  await new Promise((resolve, reject) => {
-    let attempts = 0;
-    const poll = () => {
-      attempts++;
-      const s = { code: 0 };
-      const done = nm.uniffi_test_fn_is_buffer_thread_done(s);
-      if (done === 1) resolve();
-      else if (attempts > 100) reject(new Error('Timed out'));
-      else setImmediate(poll);
-    };
-    setImmediate(poll);
-  });
+  await pollUntil(() => nm.uniffi_test_fn_is_buffer_thread_done({ code: 0 }) === 1);
 
   const status3 = { code: 0 };
   const result = nm.uniffi_test_fn_get_buffer_thread_result(status3);
@@ -705,18 +670,7 @@ test('VTable: scalar echo \u2014 all types round-trip (cross-thread)', async () 
   assert.strictEqual(status1.code, 0);
 
   // Poll for completion
-  await new Promise((resolve, reject) => {
-    let attempts = 0;
-    const poll = () => {
-      attempts++;
-      const s = { code: 0 };
-      const done = nm.uniffi_test_fn_is_scalar_echo_thread_done(s);
-      if (done === 1) resolve();
-      else if (attempts > 100) reject(new Error('Timed out'));
-      else setImmediate(poll);
-    };
-    setImmediate(poll);
-  });
+  await pollUntil(() => nm.uniffi_test_fn_is_scalar_echo_thread_done({ code: 0 }) === 1);
 
   // All 10 types should have echoed correctly
   const status2 = { code: 0 };

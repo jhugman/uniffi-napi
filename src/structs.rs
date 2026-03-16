@@ -12,6 +12,7 @@ use crate::cif::ffi_type_for;
 use crate::ffi_c_types::{ForeignBytesC, RustBufferC, RustBufferFromBytesFn, RustCallStatusC};
 use crate::ffi_type::FfiTypeDesc;
 use crate::is_main_thread;
+use crate::napi_utils;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 /// Packed arguments for cross-thread VTable callback dispatch.
@@ -366,41 +367,19 @@ unsafe fn write_return_value(
         }
         FfiTypeDesc::RustBuffer => {
             // Extract Uint8Array data
-            let raw_val = js_ret.raw();
-            let mut length: usize = 0;
-            let mut data: *mut c_void = std::ptr::null_mut();
-            let mut ab = std::ptr::null_mut();
-            let mut byte_offset: usize = 0;
-            let mut ta_type: i32 = 0;
-            let s = napi::sys::napi_get_typedarray_info(
-                raw_env,
-                raw_val,
-                &mut ta_type,
-                &mut length,
-                &mut data,
-                &mut ab,
-                &mut byte_offset,
-            );
-            if s != napi::sys::Status::napi_ok {
-                return; // Not a typed array — silently fail like other arms
-            }
+            let (data, length) = match napi_utils::read_typedarray_data(raw_env, js_ret.raw()) {
+                Some(v) => v,
+                None => return, // Not a typed array — silently fail like other arms
+            };
 
             // Create ForeignBytes and call rustbuffer_from_bytes
-            if rb_from_bytes_ptr.is_null() {
+            if rb_from_bytes_ptr.is_null() || length > i32::MAX as usize {
                 return;
             }
             let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
-
-            if length > i32::MAX as usize {
-                return;
-            }
             let foreign = ForeignBytesC {
                 len: length as i32,
-                data: if length > 0 {
-                    data as *const u8
-                } else {
-                    std::ptr::null()
-                },
+                data: if length > 0 { data } else { std::ptr::null() },
             };
             let mut call_status = RustCallStatusC::default();
             let rb = from_bytes(foreign, &mut call_status as *mut _);

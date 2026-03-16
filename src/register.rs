@@ -8,12 +8,11 @@ use napi::{JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::callback::{self, raw_arg_to_js, CallbackDef, RawCallbackArg, TrampolineUserdata};
 use crate::cif::ffi_type_for;
-use crate::ffi_c_types::{
-    ForeignBytesC, RustBufferC, RustBufferFreeFn, RustBufferFromBytesFn, RustCallStatusC,
-};
+use crate::ffi_c_types::{ForeignBytesC, RustBufferC, RustBufferFromBytesFn, RustCallStatusC};
 use crate::ffi_type::FfiTypeDesc;
 use crate::library::LibraryHandle;
 use crate::marshal;
+use crate::napi_utils;
 use crate::structs;
 
 /// Resolve RustBuffer management symbols from the `symbols` property of the definitions object.
@@ -366,55 +365,21 @@ fn call_ffi_function(
                 let len = rust_call_status.error_buf_len as usize;
                 let raw_env = env.raw();
 
-                let mut arraybuffer_data: *mut c_void = std::ptr::null_mut();
-                let mut arraybuffer = std::ptr::null_mut();
-                let status_code = unsafe {
-                    napi::sys::napi_create_arraybuffer(
-                        raw_env,
-                        len,
-                        &mut arraybuffer_data,
-                        &mut arraybuffer,
-                    )
-                };
-                if status_code == napi::sys::Status::napi_ok {
-                    if len > 0 {
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                rust_call_status.error_buf_data,
-                                arraybuffer_data as *mut u8,
-                                len,
-                            );
-                        }
-                    }
-
-                    let mut typedarray = std::ptr::null_mut();
-                    let status_code = unsafe {
-                        napi::sys::napi_create_typedarray(
-                            raw_env,
-                            napi::sys::TypedarrayType::uint8_array,
-                            len,
-                            arraybuffer,
-                            0,
-                            &mut typedarray,
-                        )
-                    };
-                    if status_code == napi::sys::Status::napi_ok {
-                        let js_uint8array = unsafe { JsUnknown::from_raw(raw_env, typedarray)? };
+                if let Ok(typedarray) = unsafe {
+                    napi_utils::create_uint8array(raw_env, rust_call_status.error_buf_data, len)
+                } {
+                    if let Ok(js_uint8array) = unsafe { JsUnknown::from_raw(raw_env, typedarray) } {
                         js_status.set_named_property("errorBuf", js_uint8array)?;
                     }
                 }
 
                 // Free the error_buf via rustbuffer_free
-                if !rb_free_ptr.is_null() {
-                    let error_rb = RustBufferC {
-                        capacity: rust_call_status.error_buf_capacity,
-                        len: rust_call_status.error_buf_len,
-                        data: rust_call_status.error_buf_data,
-                    };
-                    let free_fn: RustBufferFreeFn = unsafe { std::mem::transmute(rb_free_ptr) };
-                    let mut free_status = RustCallStatusC::default();
-                    unsafe { free_fn(error_rb, &mut free_status as *mut RustCallStatusC) };
-                }
+                let error_rb = RustBufferC {
+                    capacity: rust_call_status.error_buf_capacity,
+                    len: rust_call_status.error_buf_len,
+                    data: rust_call_status.error_buf_data,
+                };
+                unsafe { napi_utils::free_rustbuffer(error_rb, rb_free_ptr) };
             }
         }
     }
@@ -500,39 +465,16 @@ fn js_uint8array_to_rust_buffer(
     js_val: JsUnknown,
     rb_from_bytes_ptr: *const c_void,
 ) -> Result<RustBufferC> {
-    // Extract the typed array data using napi sys
-    let raw_env = env.raw();
-    let raw_val = unsafe { js_val.raw() };
-
-    let mut length: usize = 0;
-    let mut data: *mut c_void = std::ptr::null_mut();
-    let mut arraybuffer = std::ptr::null_mut();
-    let mut byte_offset: usize = 0;
-    let mut typedarray_type: i32 = 0;
-
-    let status_code = unsafe {
-        napi::sys::napi_get_typedarray_info(
-            raw_env,
-            raw_val,
-            &mut typedarray_type,
-            &mut length,
-            &mut data,
-            &mut arraybuffer,
-            &mut byte_offset,
-        )
-    };
-    if status_code != napi::sys::Status::napi_ok {
-        return Err(napi::Error::from_reason(
-            "Expected a Uint8Array argument for RustBuffer".to_string(),
-        ));
-    }
+    let (data_ptr, length) = unsafe { napi_utils::read_typedarray_data(env.raw(), js_val.raw()) }
+        .ok_or_else(|| {
+        napi::Error::from_reason("Expected a Uint8Array argument for RustBuffer".to_string())
+    })?;
 
     if length > i32::MAX as usize {
         return Err(napi::Error::from_reason(
             "RustBuffer too large for ForeignBytes (max 2GB)".to_string(),
         ));
     }
-    let data_ptr = data as *const u8;
     let foreign = ForeignBytesC {
         len: length as i32,
         data: if length > 0 {
@@ -561,52 +503,11 @@ fn rust_buffer_to_js_uint8array(
     rb: RustBufferC,
     rb_free_ptr: *const c_void,
 ) -> Result<JsUnknown> {
-    let len = rb.len as usize;
     let raw_env = env.raw();
-
-    // Create an ArrayBuffer and copy data into it
-    let mut arraybuffer_data: *mut c_void = std::ptr::null_mut();
-    let mut arraybuffer = std::ptr::null_mut();
-
-    let status_code = unsafe {
-        napi::sys::napi_create_arraybuffer(raw_env, len, &mut arraybuffer_data, &mut arraybuffer)
-    };
-    if status_code != napi::sys::Status::napi_ok {
-        return Err(napi::Error::from_reason(
-            "Failed to create ArrayBuffer".to_string(),
-        ));
-    }
-
-    if len > 0 && !rb.data.is_null() {
-        unsafe {
-            std::ptr::copy_nonoverlapping(rb.data, arraybuffer_data as *mut u8, len);
-        }
-    }
-
-    // Create a Uint8Array view over the ArrayBuffer
-    let mut typedarray = std::ptr::null_mut();
-    let status_code = unsafe {
-        napi::sys::napi_create_typedarray(
-            raw_env,
-            napi::sys::TypedarrayType::uint8_array,
-            len,
-            arraybuffer,
-            0,
-            &mut typedarray,
-        )
-    };
-    if status_code != napi::sys::Status::napi_ok {
-        return Err(napi::Error::from_reason(
-            "Failed to create Uint8Array".to_string(),
-        ));
-    }
+    let typedarray = unsafe { napi_utils::create_uint8array(raw_env, rb.data, rb.len as usize)? };
 
     // Free the RustBuffer (if non-null)
-    if !rb.data.is_null() && rb.capacity > 0 {
-        let free_fn: RustBufferFreeFn = unsafe { std::mem::transmute(rb_free_ptr) };
-        let mut call_status = RustCallStatusC::default();
-        unsafe { free_fn(rb, &mut call_status as *mut RustCallStatusC) };
-    }
+    unsafe { napi_utils::free_rustbuffer(rb, rb_free_ptr) };
 
     Ok(unsafe { JsUnknown::from_raw(raw_env, typedarray)? })
 }

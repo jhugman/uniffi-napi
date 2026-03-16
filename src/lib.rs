@@ -11,6 +11,7 @@ mod ffi_c_types;
 mod ffi_type;
 mod library;
 mod marshal;
+mod napi_utils;
 mod register;
 mod structs;
 
