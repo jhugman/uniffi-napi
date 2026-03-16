@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import lib from '../lib.js';
 const { UniffiNativeModule, FfiType } = lib;
 import { lowerString, liftString, liftArithmeticError } from './helpers/converters.mjs';
+import { continuationCallback, uniffiRustCallAsync } from './helpers/async.mjs';
 
 const LIB_PATH = join(import.meta.dirname, '..', 'fixtures', 'uniffi-fixture-simple',
   'target', 'debug',
@@ -90,4 +91,47 @@ test('fixture: divide(10.0, 2.0) = 5.0 (sync success path)', () => {
   const result = nm[`uniffi_${CRATE}_fn_func_divide`](10.0, 2.0, status);
   assert.strictEqual(status.code, 0);
   assert.strictEqual(result, 5.0);
+});
+
+test('fixture: async_add(3, 4) = 7 (async scalar)', async () => {
+  const nm = openAndRegister({
+    [`uniffi_${CRATE}_fn_func_async_add`]: {
+      args: [FfiType.UInt32, FfiType.UInt32],
+      ret: FfiType.Handle,
+      hasRustCallStatus: true,
+    },
+    [`ffi_${CRATE}_rust_future_poll_u32`]: {
+      args: [FfiType.Handle, FfiType.Callback('rust_future_continuation'), FfiType.UInt64],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+    [`ffi_${CRATE}_rust_future_complete_u32`]: {
+      args: [FfiType.Handle],
+      ret: FfiType.UInt32,
+      hasRustCallStatus: true,
+    },
+    [`ffi_${CRATE}_rust_future_free_u32`]: {
+      args: [FfiType.Handle],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+  }, {
+    rust_future_continuation: {
+      args: [FfiType.UInt64, FfiType.Int8],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+  });
+
+  const result = await uniffiRustCallAsync(nm, {
+    rustFutureFunc: () => {
+      const status = { code: 0 };
+      return nm[`uniffi_${CRATE}_fn_func_async_add`](3, 4, status);
+    },
+    pollFunc: `ffi_${CRATE}_rust_future_poll_u32`,
+    completeFunc: `ffi_${CRATE}_rust_future_complete_u32`,
+    freeFunc: `ffi_${CRATE}_rust_future_free_u32`,
+  });
+
+  assert.strictEqual(result, 7);
 });
