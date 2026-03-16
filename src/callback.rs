@@ -51,6 +51,7 @@
 //!   JS `Uint8Array` (avoiding the intermediate `Vec`), then frees the
 //!   original. The JS garbage collector owns the copy from that point on.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 use libffi::low;
@@ -63,6 +64,7 @@ use crate::ffi_c_types::RustBufferC;
 use crate::ffi_type::FfiTypeDesc;
 use crate::is_main_thread;
 use crate::napi_utils;
+use crate::structs::StructDef;
 
 /// A parsed description of a single callback's signature.
 ///
@@ -588,8 +590,12 @@ pub unsafe fn c_arg_to_js(
 ///
 /// The type mapping is handled by [`ffi_type_for`], which converts each
 /// [`FfiTypeDesc`] variant to the corresponding libffi [`Type`].
-pub fn build_callback_cif(callback_def: &CallbackDef) -> Cif {
-    let cif_arg_types: Vec<Type> = callback_def.args.iter().map(ffi_type_for).collect();
-    let cif_ret_type = ffi_type_for(&callback_def.ret);
+pub fn build_callback_cif(callback_def: &CallbackDef, struct_defs: &HashMap<String, StructDef>) -> Cif {
+    let cif_arg_types: Vec<Type> = callback_def
+        .args
+        .iter()
+        .map(|a| ffi_type_for(a, struct_defs))
+        .collect();
+    let cif_ret_type = ffi_type_for(&callback_def.ret, struct_defs);
     Cif::new(cif_arg_types, cif_ret_type)
 }

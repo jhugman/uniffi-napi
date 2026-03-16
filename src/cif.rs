@@ -18,20 +18,27 @@
 //!   they are parseable from JS for completeness but never appear in actual
 //!   UniFFI function signatures.
 
+use std::collections::HashMap;
+
 use libffi::middle::Type;
 
 use crate::ffi_type::FfiTypeDesc;
+use crate::structs::StructDef;
 
 /// Maps an [`FfiTypeDesc`] to a [`libffi::middle::Type`] suitable for CIF construction.
 ///
 /// This is the single point of truth for how our abstract types become ABI types.
 ///
+/// The `struct_defs` parameter is required to resolve `Struct(name)` variants: when a
+/// by-value struct appears in a signature, its field layout must be known to build the
+/// correct `Type::structure`. Pass an empty `HashMap` when no by-value structs are
+/// expected (all existing code paths use pointer-sized types).
+///
 /// # Panics
 ///
-/// Panics on `ForeignBytes` and bare `Struct(name)`, which are parseable from JS
-/// but have no direct CIF representation. `Struct` is always used via
-/// `Reference(Struct(...))`, which maps to `Type::pointer()`.
-pub fn ffi_type_for(desc: &FfiTypeDesc) -> Type {
+/// - Panics on `ForeignBytes`, which has no CIF representation.
+/// - Panics on `Struct(name)` when `name` is not found in `struct_defs`.
+pub fn ffi_type_for(desc: &FfiTypeDesc, struct_defs: &HashMap<String, StructDef>) -> Type {
     match desc {
         FfiTypeDesc::UInt8 => Type::u8(),
         FfiTypeDesc::Int8 => Type::i8(),
@@ -54,7 +61,16 @@ pub fn ffi_type_for(desc: &FfiTypeDesc) -> Type {
             panic!("ForeignBytes has no CIF representation; it is not used in UniFFI function signatures")
         }
         FfiTypeDesc::Struct(name) => {
-            panic!("Bare Struct('{name}') has no CIF representation; use Reference(Struct('{name}')) for pass-by-pointer")
+            let struct_def = struct_defs.get(name).unwrap_or_else(|| {
+                panic!("Unknown struct type: '{name}'. Ensure it is defined in the structs section of register().")
+            });
+            Type::structure(
+                struct_def
+                    .fields
+                    .iter()
+                    .map(|f| ffi_type_for(&f.field_type, struct_defs))
+                    .collect::<Vec<_>>(),
+            )
         }
     }
 }

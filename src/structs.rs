@@ -742,7 +742,10 @@ unsafe fn write_out_return_value(
         }
         _ => {
             #[cfg(debug_assertions)]
-            eprintln!("write_out_return_value: unsupported return type {:?}", ret_type);
+            eprintln!(
+                "write_out_return_value: unsupported return type {:?}",
+                ret_type
+            );
         }
     }
 }
@@ -1140,7 +1143,11 @@ pub fn build_vtable_struct(
 
                 // Build CIF for this callback:
                 // declared args + optional out-return pointer + optional RustCallStatus pointer
-                let mut cif_arg_types: Vec<Type> = cb_def.args.iter().map(ffi_type_for).collect();
+                let mut cif_arg_types: Vec<Type> = cb_def
+                    .args
+                    .iter()
+                    .map(|a| ffi_type_for(a, &HashMap::new()))
+                    .collect();
                 if cb_def.out_return {
                     // Out-return pointer: an extra pointer arg before RustCallStatus
                     cif_arg_types.push(Type::pointer());
@@ -1153,7 +1160,7 @@ pub fn build_vtable_struct(
                 let cif_ret_type = if cb_def.out_return {
                     Type::void()
                 } else {
-                    ffi_type_for(&cb_def.ret)
+                    ffi_type_for(&cb_def.ret, &HashMap::new())
                 };
                 let cif = Cif::new(cif_arg_types, cif_ret_type);
 
