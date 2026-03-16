@@ -205,17 +205,20 @@ pub fn raw_arg_to_js(env: &Env, raw_arg: &RawCallbackArg) -> napi::Result<napi::
             }
             if len > 0 {
                 unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        arraybuffer_data as *mut u8,
-                        len,
-                    );
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), arraybuffer_data as *mut u8, len);
                 }
             }
 
             let mut typedarray = std::ptr::null_mut();
             let status = unsafe {
-                napi::sys::napi_create_typedarray(raw_env, 1, len, arraybuffer, 0, &mut typedarray)
+                napi::sys::napi_create_typedarray(
+                    raw_env,
+                    napi::sys::TypedarrayType::uint8_array,
+                    len,
+                    arraybuffer,
+                    0,
+                    &mut typedarray,
+                )
             };
             if status != napi::sys::Status::napi_ok {
                 return Err(napi::Error::from_reason("Failed to create Uint8Array"));
@@ -387,7 +390,12 @@ pub unsafe fn c_arg_to_js(
             // Create Uint8Array view
             let mut typedarray = std::ptr::null_mut();
             let status = napi::sys::napi_create_typedarray(
-                raw_env, 1, len, arraybuffer, 0, &mut typedarray,
+                raw_env,
+                napi::sys::TypedarrayType::uint8_array,
+                len,
+                arraybuffer,
+                0,
+                &mut typedarray,
             );
             if status != napi::sys::Status::napi_ok {
                 return Err(napi::Error::from_reason(

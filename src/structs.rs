@@ -411,7 +411,10 @@ unsafe fn write_return_value(
             // Write RustBufferC to result buffer
             *(result_ptr as *mut RustBufferC) = rb;
         }
-        _ => {} // Unsupported return types silently ignored
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!("write_return_value: unsupported return type {:?}", ret_type);
+        }
     }
 }
 
@@ -479,7 +482,13 @@ unsafe fn write_raw_return_value(
                 *(result_ptr as *mut RustBufferC) = rb;
             }
         }
-        _ => {} // Type mismatch or void — ignore
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "write_raw_return_value: unsupported type pair {:?} / {:?}",
+                ret_type, raw_ret
+            );
+        }
     }
 }
 

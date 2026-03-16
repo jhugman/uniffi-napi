@@ -391,7 +391,7 @@ fn call_ffi_function(
                     let status_code = unsafe {
                         napi::sys::napi_create_typedarray(
                             raw_env,
-                            1, // napi_uint8_array
+                            napi::sys::TypedarrayType::uint8_array,
                             len,
                             arraybuffer,
                             0,
@@ -588,7 +588,7 @@ fn rust_buffer_to_js_uint8array(
     let status_code = unsafe {
         napi::sys::napi_create_typedarray(
             raw_env,
-            1, // napi_uint8_array (Int8=0, Uint8=1)
+            napi::sys::TypedarrayType::uint8_array,
             len,
             arraybuffer,
             0,

@@ -577,58 +577,52 @@ test('VTable: callback receives RustBuffer arg from another thread', async () =>
   assert.strictEqual(result, 60); // 10+20+30
 });
 
-test('VTable: scalar echo — all types round-trip (same-thread)', () => {
+// --- Shared ScalarEchoVTable registration definitions ---
+
+const SCALAR_ECHO_VTABLE_STRUCT = [
+  { name: 'echo_u8', type: FfiType.Callback('vt_echo_u8') },
+  { name: 'echo_i8', type: FfiType.Callback('vt_echo_i8') },
+  { name: 'echo_u16', type: FfiType.Callback('vt_echo_u16') },
+  { name: 'echo_i16', type: FfiType.Callback('vt_echo_i16') },
+  { name: 'echo_u32', type: FfiType.Callback('vt_echo_u32') },
+  { name: 'echo_i32', type: FfiType.Callback('vt_echo_i32') },
+  { name: 'echo_u64', type: FfiType.Callback('vt_echo_u64') },
+  { name: 'echo_i64', type: FfiType.Callback('vt_echo_i64') },
+  { name: 'echo_f32', type: FfiType.Callback('vt_echo_f32') },
+  { name: 'echo_f64', type: FfiType.Callback('vt_echo_f64') },
+  { name: 'free', type: FfiType.Callback('vt_echo_free') },
+];
+
+const SCALAR_ECHO_CALLBACKS = {
+  vt_echo_u8:  { args: [FfiType.UInt64, FfiType.UInt8],   ret: FfiType.UInt8,   hasRustCallStatus: true },
+  vt_echo_i8:  { args: [FfiType.UInt64, FfiType.Int8],    ret: FfiType.Int8,    hasRustCallStatus: true },
+  vt_echo_u16: { args: [FfiType.UInt64, FfiType.UInt16],  ret: FfiType.UInt16,  hasRustCallStatus: true },
+  vt_echo_i16: { args: [FfiType.UInt64, FfiType.Int16],   ret: FfiType.Int16,   hasRustCallStatus: true },
+  vt_echo_u32: { args: [FfiType.UInt64, FfiType.UInt32],  ret: FfiType.UInt32,  hasRustCallStatus: true },
+  vt_echo_i32: { args: [FfiType.UInt64, FfiType.Int32],   ret: FfiType.Int32,   hasRustCallStatus: true },
+  vt_echo_u64: { args: [FfiType.UInt64, FfiType.UInt64],  ret: FfiType.UInt64,  hasRustCallStatus: true },
+  vt_echo_i64: { args: [FfiType.UInt64, FfiType.Int64],   ret: FfiType.Int64,   hasRustCallStatus: true },
+  vt_echo_f32: { args: [FfiType.UInt64, FfiType.Float32], ret: FfiType.Float32, hasRustCallStatus: true },
+  vt_echo_f64: { args: [FfiType.UInt64, FfiType.Float64], ret: FfiType.Float64, hasRustCallStatus: true },
+  vt_echo_free: { args: [FfiType.UInt64], ret: FfiType.Void, hasRustCallStatus: true },
+};
+
+function registerScalarEchoVTable(extraFunctions = {}) {
   const lib = openLib();
   const nm = lib.register({
     symbols: SYMBOLS,
-    structs: {
-      ScalarEchoVTable: [
-        { name: 'echo_u8', type: FfiType.Callback('vt_echo_u8') },
-        { name: 'echo_i8', type: FfiType.Callback('vt_echo_i8') },
-        { name: 'echo_u16', type: FfiType.Callback('vt_echo_u16') },
-        { name: 'echo_i16', type: FfiType.Callback('vt_echo_i16') },
-        { name: 'echo_u32', type: FfiType.Callback('vt_echo_u32') },
-        { name: 'echo_i32', type: FfiType.Callback('vt_echo_i32') },
-        { name: 'echo_u64', type: FfiType.Callback('vt_echo_u64') },
-        { name: 'echo_i64', type: FfiType.Callback('vt_echo_i64') },
-        { name: 'echo_f32', type: FfiType.Callback('vt_echo_f32') },
-        { name: 'echo_f64', type: FfiType.Callback('vt_echo_f64') },
-        { name: 'free', type: FfiType.Callback('vt_echo_free') },
-      ],
-    },
-    callbacks: {
-      vt_echo_u8:  { args: [FfiType.UInt64, FfiType.UInt8],   ret: FfiType.UInt8,   hasRustCallStatus: true },
-      vt_echo_i8:  { args: [FfiType.UInt64, FfiType.Int8],    ret: FfiType.Int8,    hasRustCallStatus: true },
-      vt_echo_u16: { args: [FfiType.UInt64, FfiType.UInt16],  ret: FfiType.UInt16,  hasRustCallStatus: true },
-      vt_echo_i16: { args: [FfiType.UInt64, FfiType.Int16],   ret: FfiType.Int16,   hasRustCallStatus: true },
-      vt_echo_u32: { args: [FfiType.UInt64, FfiType.UInt32],  ret: FfiType.UInt32,  hasRustCallStatus: true },
-      vt_echo_i32: { args: [FfiType.UInt64, FfiType.Int32],   ret: FfiType.Int32,   hasRustCallStatus: true },
-      vt_echo_u64: { args: [FfiType.UInt64, FfiType.UInt64],  ret: FfiType.UInt64,  hasRustCallStatus: true },
-      vt_echo_i64: { args: [FfiType.UInt64, FfiType.Int64],   ret: FfiType.Int64,   hasRustCallStatus: true },
-      vt_echo_f32: { args: [FfiType.UInt64, FfiType.Float32], ret: FfiType.Float32, hasRustCallStatus: true },
-      vt_echo_f64: { args: [FfiType.UInt64, FfiType.Float64], ret: FfiType.Float64, hasRustCallStatus: true },
-      vt_echo_free: { args: [FfiType.UInt64], ret: FfiType.Void, hasRustCallStatus: true },
-    },
+    structs: { ScalarEchoVTable: SCALAR_ECHO_VTABLE_STRUCT },
+    callbacks: SCALAR_ECHO_CALLBACKS,
     functions: {
       uniffi_test_fn_init_scalar_echo_vtable: {
         args: [FfiType.Reference(FfiType.Struct('ScalarEchoVTable'))],
         ret: FfiType.Void,
         hasRustCallStatus: true,
       },
-      uniffi_test_fn_echo_u8_via_vtable:  { args: [FfiType.UInt64, FfiType.UInt8],   ret: FfiType.UInt8,   hasRustCallStatus: true },
-      uniffi_test_fn_echo_i8_via_vtable:  { args: [FfiType.UInt64, FfiType.Int8],    ret: FfiType.Int8,    hasRustCallStatus: true },
-      uniffi_test_fn_echo_u16_via_vtable: { args: [FfiType.UInt64, FfiType.UInt16],  ret: FfiType.UInt16,  hasRustCallStatus: true },
-      uniffi_test_fn_echo_i16_via_vtable: { args: [FfiType.UInt64, FfiType.Int16],   ret: FfiType.Int16,   hasRustCallStatus: true },
-      uniffi_test_fn_echo_u32_via_vtable: { args: [FfiType.UInt64, FfiType.UInt32],  ret: FfiType.UInt32,  hasRustCallStatus: true },
-      uniffi_test_fn_echo_i32_via_vtable: { args: [FfiType.UInt64, FfiType.Int32],   ret: FfiType.Int32,   hasRustCallStatus: true },
-      uniffi_test_fn_echo_u64_via_vtable: { args: [FfiType.UInt64, FfiType.UInt64],  ret: FfiType.UInt64,  hasRustCallStatus: true },
-      uniffi_test_fn_echo_i64_via_vtable: { args: [FfiType.UInt64, FfiType.Int64],   ret: FfiType.Int64,   hasRustCallStatus: true },
-      uniffi_test_fn_echo_f32_via_vtable: { args: [FfiType.UInt64, FfiType.Float32], ret: FfiType.Float32, hasRustCallStatus: true },
-      uniffi_test_fn_echo_f64_via_vtable: { args: [FfiType.UInt64, FfiType.Float64], ret: FfiType.Float64, hasRustCallStatus: true },
+      ...extraFunctions,
     },
   });
 
-  // Register VTable: each callback echoes its argument
   const echo = (handle, value, callStatus) => { callStatus.code = 0; return value; };
   const status0 = { code: 0 };
   nm.uniffi_test_fn_init_scalar_echo_vtable({
@@ -638,91 +632,72 @@ test('VTable: scalar echo — all types round-trip (same-thread)', () => {
     free: (handle, callStatus) => { callStatus.code = 0; },
   }, status0);
   assert.strictEqual(status0.code, 0);
+
+  return nm;
+}
+
+test('VTable: scalar echo \u2014 all types round-trip (same-thread)', () => {
+  const nm = registerScalarEchoVTable({
+    uniffi_test_fn_echo_u8_via_vtable:  { args: [FfiType.UInt64, FfiType.UInt8],   ret: FfiType.UInt8,   hasRustCallStatus: true },
+    uniffi_test_fn_echo_i8_via_vtable:  { args: [FfiType.UInt64, FfiType.Int8],    ret: FfiType.Int8,    hasRustCallStatus: true },
+    uniffi_test_fn_echo_u16_via_vtable: { args: [FfiType.UInt64, FfiType.UInt16],  ret: FfiType.UInt16,  hasRustCallStatus: true },
+    uniffi_test_fn_echo_i16_via_vtable: { args: [FfiType.UInt64, FfiType.Int16],   ret: FfiType.Int16,   hasRustCallStatus: true },
+    uniffi_test_fn_echo_u32_via_vtable: { args: [FfiType.UInt64, FfiType.UInt32],  ret: FfiType.UInt32,  hasRustCallStatus: true },
+    uniffi_test_fn_echo_i32_via_vtable: { args: [FfiType.UInt64, FfiType.Int32],   ret: FfiType.Int32,   hasRustCallStatus: true },
+    uniffi_test_fn_echo_u64_via_vtable: { args: [FfiType.UInt64, FfiType.UInt64],  ret: FfiType.UInt64,  hasRustCallStatus: true },
+    uniffi_test_fn_echo_i64_via_vtable: { args: [FfiType.UInt64, FfiType.Int64],   ret: FfiType.Int64,   hasRustCallStatus: true },
+    uniffi_test_fn_echo_f32_via_vtable: { args: [FfiType.UInt64, FfiType.Float32], ret: FfiType.Float32, hasRustCallStatus: true },
+    uniffi_test_fn_echo_f64_via_vtable: { args: [FfiType.UInt64, FfiType.Float64], ret: FfiType.Float64, hasRustCallStatus: true },
+  });
 
   const s = () => ({ code: 0 });
 
-  // Integer types
+  // Integer types — including boundary values
+  assert.strictEqual(nm.uniffi_test_fn_echo_u8_via_vtable(1n, 0, s()), 0);
   assert.strictEqual(nm.uniffi_test_fn_echo_u8_via_vtable(1n, 255, s()), 255);
-  assert.strictEqual(nm.uniffi_test_fn_echo_i8_via_vtable(1n, -42, s()), -42);
+  assert.strictEqual(nm.uniffi_test_fn_echo_i8_via_vtable(1n, -128, s()), -128);
+  assert.strictEqual(nm.uniffi_test_fn_echo_i8_via_vtable(1n, 127, s()), 127);
+  assert.strictEqual(nm.uniffi_test_fn_echo_u16_via_vtable(1n, 0, s()), 0);
   assert.strictEqual(nm.uniffi_test_fn_echo_u16_via_vtable(1n, 65535, s()), 65535);
-  assert.strictEqual(nm.uniffi_test_fn_echo_i16_via_vtable(1n, -12345, s()), -12345);
+  assert.strictEqual(nm.uniffi_test_fn_echo_i16_via_vtable(1n, -32768, s()), -32768);
+  assert.strictEqual(nm.uniffi_test_fn_echo_i16_via_vtable(1n, 32767, s()), 32767);
+  assert.strictEqual(nm.uniffi_test_fn_echo_u32_via_vtable(1n, 0, s()), 0);
   assert.strictEqual(nm.uniffi_test_fn_echo_u32_via_vtable(1n, 4294967295, s()), 4294967295);
-  assert.strictEqual(nm.uniffi_test_fn_echo_i32_via_vtable(1n, -2147483647, s()), -2147483647);
+  assert.strictEqual(nm.uniffi_test_fn_echo_i32_via_vtable(1n, -2147483648, s()), -2147483648);
+  assert.strictEqual(nm.uniffi_test_fn_echo_i32_via_vtable(1n, 2147483647, s()), 2147483647);
+  assert.strictEqual(nm.uniffi_test_fn_echo_u64_via_vtable(1n, 0n, s()), 0n);
   assert.strictEqual(nm.uniffi_test_fn_echo_u64_via_vtable(1n, 9007199254740993n, s()), 9007199254740993n);
   assert.strictEqual(nm.uniffi_test_fn_echo_i64_via_vtable(1n, -9007199254740993n, s()), -9007199254740993n);
+  assert.strictEqual(nm.uniffi_test_fn_echo_i64_via_vtable(1n, 0n, s()), 0n);
 
-  // Floating point
+  // Floating point — including boundary values
   const f32Result = nm.uniffi_test_fn_echo_f32_via_vtable(1n, 3.14, s());
   assert.ok(Math.abs(f32Result - 3.14) < 0.01, `f32 echo: expected ~3.14, got ${f32Result}`);
+  assert.strictEqual(nm.uniffi_test_fn_echo_f32_via_vtable(1n, 0, s()), 0);
   assert.strictEqual(nm.uniffi_test_fn_echo_f64_via_vtable(1n, 2.718281828, s()), 2.718281828);
+  assert.strictEqual(nm.uniffi_test_fn_echo_f64_via_vtable(1n, 0, s()), 0);
+  assert.strictEqual(nm.uniffi_test_fn_echo_f64_via_vtable(1n, -0, s()), -0);
+  assert.strictEqual(nm.uniffi_test_fn_echo_f64_via_vtable(1n, Number.MAX_SAFE_INTEGER, s()), Number.MAX_SAFE_INTEGER);
 });
 
-test('VTable: scalar echo — all types round-trip (cross-thread)', async () => {
-  const lib = openLib();
-  const nm = lib.register({
-    symbols: SYMBOLS,
-    structs: {
-      ScalarEchoVTable: [
-        { name: 'echo_u8', type: FfiType.Callback('vt_echo_u8') },
-        { name: 'echo_i8', type: FfiType.Callback('vt_echo_i8') },
-        { name: 'echo_u16', type: FfiType.Callback('vt_echo_u16') },
-        { name: 'echo_i16', type: FfiType.Callback('vt_echo_i16') },
-        { name: 'echo_u32', type: FfiType.Callback('vt_echo_u32') },
-        { name: 'echo_i32', type: FfiType.Callback('vt_echo_i32') },
-        { name: 'echo_u64', type: FfiType.Callback('vt_echo_u64') },
-        { name: 'echo_i64', type: FfiType.Callback('vt_echo_i64') },
-        { name: 'echo_f32', type: FfiType.Callback('vt_echo_f32') },
-        { name: 'echo_f64', type: FfiType.Callback('vt_echo_f64') },
-        { name: 'free', type: FfiType.Callback('vt_echo_free') },
-      ],
+test('VTable: scalar echo \u2014 all types round-trip (cross-thread)', async () => {
+  const nm = registerScalarEchoVTable({
+    uniffi_test_fn_echo_all_scalars_via_vtable_from_thread: {
+      args: [FfiType.UInt64],
+      ret: FfiType.Void,
+      hasRustCallStatus: true,
     },
-    callbacks: {
-      vt_echo_u8:  { args: [FfiType.UInt64, FfiType.UInt8],   ret: FfiType.UInt8,   hasRustCallStatus: true },
-      vt_echo_i8:  { args: [FfiType.UInt64, FfiType.Int8],    ret: FfiType.Int8,    hasRustCallStatus: true },
-      vt_echo_u16: { args: [FfiType.UInt64, FfiType.UInt16],  ret: FfiType.UInt16,  hasRustCallStatus: true },
-      vt_echo_i16: { args: [FfiType.UInt64, FfiType.Int16],   ret: FfiType.Int16,   hasRustCallStatus: true },
-      vt_echo_u32: { args: [FfiType.UInt64, FfiType.UInt32],  ret: FfiType.UInt32,  hasRustCallStatus: true },
-      vt_echo_i32: { args: [FfiType.UInt64, FfiType.Int32],   ret: FfiType.Int32,   hasRustCallStatus: true },
-      vt_echo_u64: { args: [FfiType.UInt64, FfiType.UInt64],  ret: FfiType.UInt64,  hasRustCallStatus: true },
-      vt_echo_i64: { args: [FfiType.UInt64, FfiType.Int64],   ret: FfiType.Int64,   hasRustCallStatus: true },
-      vt_echo_f32: { args: [FfiType.UInt64, FfiType.Float32], ret: FfiType.Float32, hasRustCallStatus: true },
-      vt_echo_f64: { args: [FfiType.UInt64, FfiType.Float64], ret: FfiType.Float64, hasRustCallStatus: true },
-      vt_echo_free: { args: [FfiType.UInt64], ret: FfiType.Void, hasRustCallStatus: true },
+    uniffi_test_fn_is_scalar_echo_thread_done: {
+      args: [],
+      ret: FfiType.Int8,
+      hasRustCallStatus: true,
     },
-    functions: {
-      uniffi_test_fn_init_scalar_echo_vtable: {
-        args: [FfiType.Reference(FfiType.Struct('ScalarEchoVTable'))],
-        ret: FfiType.Void,
-        hasRustCallStatus: true,
-      },
-      uniffi_test_fn_echo_all_scalars_via_vtable_from_thread: {
-        args: [FfiType.UInt64],
-        ret: FfiType.Void,
-        hasRustCallStatus: true,
-      },
-      uniffi_test_fn_is_scalar_echo_thread_done: {
-        args: [],
-        ret: FfiType.Int8,
-        hasRustCallStatus: true,
-      },
-      uniffi_test_fn_get_scalar_echo_thread_result: {
-        args: [],
-        ret: FfiType.Int32,
-        hasRustCallStatus: true,
-      },
+    uniffi_test_fn_get_scalar_echo_thread_result: {
+      args: [],
+      ret: FfiType.Int32,
+      hasRustCallStatus: true,
     },
   });
-
-  // Register VTable: each callback echoes its argument
-  const echo = (handle, value, callStatus) => { callStatus.code = 0; return value; };
-  const status0 = { code: 0 };
-  nm.uniffi_test_fn_init_scalar_echo_vtable({
-    echo_u8: echo, echo_i8: echo, echo_u16: echo, echo_i16: echo,
-    echo_u32: echo, echo_i32: echo, echo_u64: echo, echo_i64: echo,
-    echo_f32: echo, echo_f64: echo,
-    free: (handle, callStatus) => { callStatus.code = 0; },
-  }, status0);
-  assert.strictEqual(status0.code, 0);
 
   // Fire cross-thread echo of all scalar types
   const status1 = { code: 0 };
