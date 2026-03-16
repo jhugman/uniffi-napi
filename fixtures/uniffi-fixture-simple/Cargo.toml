@@ -10,3 +10,4 @@ crate-type = ["cdylib"]
 uniffi = { version = "0.31", features = ["cli"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt"] }
+async-trait = "0.1"

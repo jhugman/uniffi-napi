@@ -62,3 +62,17 @@ pub async fn use_calculator_from_thread(calc: Box<dyn Calculator>, a: u32, b: u3
     let handle = tokio::runtime::Handle::current();
     handle.spawn_blocking(move || calc.add(a, b)).await.unwrap()
 }
+
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait AsyncFetcher: Send + Sync {
+    async fn fetch(&self, input: String) -> String;
+}
+
+#[uniffi::export]
+pub async fn use_async_fetcher(
+    fetcher: std::sync::Arc<dyn AsyncFetcher>,
+    input: String,
+) -> String {
+    fetcher.fetch(input).await
+}
