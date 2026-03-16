@@ -1,3 +1,51 @@
+//! # The Orchestrator
+//!
+//! This module is the entry point for the entire FFI bridge. The [`register`] function
+//! accepts a JavaScript object that *describes* a native library — its exported functions,
+//! callback signatures, and struct (VTable) layouts — and returns a JavaScript object whose
+//! methods call directly into that library. Every such call passes through
+//! [`call_ffi_function`], which marshals JS values to their C representations, invokes the
+//! target symbol via libffi, and marshals the result back to JS.
+//!
+//! ## The Registration Pipeline
+//!
+//! [`register`] proceeds in three phases:
+//!
+//! 1. **Resolve RustBuffer management symbols** (`alloc`, `free`, `from_bytes`).
+//!    These are needed by any function that passes or returns a `RustBuffer`.
+//! 2. **Parse callback and struct definitions** from the JS description object.
+//!    Each definition records the argument types, return type, and
+//!    `hasRustCallStatus` flag so that call-time marshalling knows what to do.
+//! 3. **For each exported function:** parse its signature, look up its symbol via
+//!    `dlsym`, build a libffi CIF, and create a JS closure that captures
+//!    everything needed to perform the call at runtime.
+//!
+//! ## The Call Pipeline (`call_ffi_function`)
+//!
+//! When JS calls one of the generated methods, `call_ffi_function` runs:
+//!
+//! 1. **Marshal JS arguments to Rust values.** Four cases:
+//!    - *RustBuffer*: convert a `Uint8Array` to a `RustBufferC` via `rustbuffer_from_bytes`.
+//!    - *Callback*: create a libffi closure backed by a trampoline (see `callback.rs`),
+//!      yielding a C function pointer.
+//!    - *Reference(Struct)*: build a VTable struct (see `structs.rs`) from a JS object.
+//!    - *Scalars*: convert via [`marshal::js_to_boxed`].
+//! 2. **Build the libffi argument vector** from the marshalled values.
+//! 3. **Append a `RustCallStatus` pointer** as the final C argument, if the function
+//!    declares `hasRustCallStatus`.
+//! 4. **Call via libffi** (`cif.call`).
+//! 5. **Write back `RustCallStatus`** to the JS status object, including any error
+//!    buffer contents (converted to `Uint8Array`).
+//! 6. **Marshal the return value** back to JS.
+//!
+//! ## On intentional leaks
+//!
+//! Callback closures and their userdata are intentionally leaked (`Box::into_raw` +
+//! `mem::forget`). The native library may invoke the callback from an arbitrary thread
+//! at an arbitrary time after `call_ffi_function` returns, so we cannot determine the
+//! callback's lifetime statically. This is a deliberate trade-off: a small, bounded
+//! amount of memory is leaked per callback registration in exchange for soundness.
+
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
@@ -15,7 +63,12 @@ use crate::marshal;
 use crate::napi_utils;
 use crate::structs;
 
-/// Resolve RustBuffer management symbols from the `symbols` property of the definitions object.
+/// Resolve the three RustBuffer management symbols (`alloc`, `free`, `from_bytes`)
+/// from the `symbols` property of the JS definitions object.
+///
+/// Only `from_bytes` and `free` are returned; `alloc` is resolved purely to validate
+/// that the symbol exists in the loaded library. We call `from_bytes` at marshalling
+/// time (JS `Uint8Array` to `RustBufferC`) and `free` after copying data out.
 fn resolve_rustbuffer_symbols(
     handle: &LibraryHandle,
     definitions: &JsObject,
@@ -45,6 +98,9 @@ fn resolve_rustbuffer_symbols(
     Ok((from_bytes_ptr, free_ptr))
 }
 
+/// Build a JS object whose methods call into the native library described by `definitions`.
+///
+/// See the module-level documentation for the full registration pipeline.
 pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Result<JsObject> {
     // Resolve rustbuffer symbols from definitions
     let (rb_from_bytes_ptr, rb_free_ptr) = resolve_rustbuffer_symbols(handle, &definitions)?;
@@ -179,6 +235,11 @@ fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, 
     Ok(map)
 }
 
+/// Execute a single FFI call: marshal JS arguments to C, invoke via libffi, marshal back.
+///
+/// See the module-level "Call Pipeline" section for a high-level overview. The function
+/// is parameterized by everything it needs — symbol pointer, type descriptors, RustBuffer
+/// helpers, callback/struct definitions — so it is stateless between calls.
 #[allow(clippy::too_many_arguments)]
 fn call_ffi_function(
     env: &Env,
@@ -222,7 +283,11 @@ fn call_ffi_function(
                     napi::Error::from_reason(format!("Unknown struct: {}", struct_name))
                 })?;
 
-                // Get the JS object for this argument
+                // Get the JS object for this argument.
+                // SAFETY: `env.raw()` is the valid napi_env for the current call context,
+                // and `js_val.raw()` is the napi_value we received from `ctx.get(i)` — a
+                // live handle in this scope. `from_raw` merely wraps them in a typed wrapper;
+                // it does not take ownership or extend lifetime.
                 let js_obj = unsafe { JsObject::from_raw(env.raw(), js_val.raw())? };
 
                 // Build the C struct (VTable) from the JS object
@@ -245,7 +310,11 @@ fn call_ffi_function(
                     napi::Error::from_reason(format!("Unknown callback: {}", cb_name))
                 })?;
 
-                // Get the JS function for creating a ThreadsafeFunction
+                // SAFETY: Same rationale as the JsObject::from_raw above — env and js_val
+                // are valid napi handles from the current call context. We also extract the
+                // raw napi_value for storage in TrampolineUserdata; it remains valid for the
+                // duration of the native call (the GC cannot collect it while we hold a
+                // reference in the current scope).
                 let js_fn = unsafe { napi::JsFunction::from_raw(env.raw(), js_val.raw())? };
                 let raw_fn = unsafe { js_val.raw() };
 
@@ -286,18 +355,32 @@ fn call_ffi_function(
                 // This is necessary because the callback may be invoked from another
                 // thread after call_ffi_function returns.
                 let userdata_ptr = Box::into_raw(userdata);
+                // SAFETY: `userdata_ptr` was just returned by `Box::into_raw`, so it
+                // points to a valid, fully-initialized `TrampolineUserdata` on the heap.
+                // By leaking the Box we guarantee the allocation is never freed, making
+                // the `&'static` borrow sound. The trampoline closure (below) and any
+                // cross-thread callback invocations may dereference this pointer at any
+                // future time; the intentional leak ensures it remains valid.
                 let userdata_ref: &'static TrampolineUserdata = unsafe { &*userdata_ptr };
 
                 // Create the closure with 'static lifetime since userdata is leaked.
                 let closure = Closure::new(cb_cif, callback::trampoline_callback, userdata_ref);
 
                 // Extract the function pointer value from the closure.
+                // SAFETY: `closure.code_ptr()` returns a `CodePtr` wrapping the executable
+                // trampoline that libffi JIT-compiled for this closure. Dereferencing it
+                // yields the raw function pointer, which we cast to `*const c_void` for
+                // storage. The pointer remains valid as long as the closure is alive — and
+                // we ensure that by `mem::forget`-ing the closure immediately below.
                 let fn_ptr: *const c_void = *closure.code_ptr() as *const std::ffi::c_void;
                 callback_fn_ptrs.push(fn_ptr);
 
-                // Leak the closure too so the function pointer remains valid.
-                // For cross-thread callbacks, we can't know when the callback will
-                // no longer be called, so we must keep it alive indefinitely.
+                // SAFETY: We intentionally leak the closure so that `fn_ptr` (derived from
+                // its code pointer) remains valid for the lifetime of the process. Dropping
+                // the closure would deallocate the libffi trampoline, leaving `fn_ptr` as a
+                // dangling pointer. Because the native library may invoke the callback from
+                // any thread at any future time, we cannot determine a safe point to drop it.
+                // This is the same "intentional leak" pattern used for `userdata` above.
                 std::mem::forget(closure);
 
                 // Placeholder for boxed_args (not used for callbacks)
@@ -360,7 +443,12 @@ fn call_ffi_function(
             js_status
                 .set_named_property("code", env.create_int32(rust_call_status.code as i32)?)?;
 
-            // If error, copy error_buf into a Uint8Array and set on js_status
+            // If the call reported an error, copy the error buffer into a JS Uint8Array
+            // and attach it to the status object, then free the native error buffer.
+            // SAFETY (ordering): `create_uint8array` copies from `error_buf_data` into a
+            // new JS ArrayBuffer, so we must call it *before* `free_rustbuffer` releases
+            // the native allocation. This is the same create-then-free pattern used in
+            // `rust_buffer_to_js_uint8array`.
             if rust_call_status.code != 0 && !rust_call_status.error_buf_data.is_null() {
                 let len = rust_call_status.error_buf_len as usize;
                 let raw_env = env.raw();
@@ -394,13 +482,30 @@ fn call_ffi_function(
     }
 }
 
-/// Call the CIF with the correct return type based on FfiTypeDesc.
+/// Dispatch `cif.call` with the correct Rust return type inferred from `ret_type`.
+///
+/// libffi's `Cif::call` is generic over the return type `R`, so we must monomorphize
+/// on every supported scalar/buffer type. The result is type-erased into a
+/// `Box<dyn Any>` that `ret_to_js` (or `rust_buffer_to_js_uint8array`) later downcasts.
 fn call_with_ret_type(
     cif: &Cif,
     code_ptr: CodePtr,
     args: &[Arg],
     ret_type: &FfiTypeDesc,
 ) -> Result<Box<dyn std::any::Any>> {
+    // SAFETY: The entire body is one `unsafe` block because `cif.call` is an unsafe
+    // function. The safety contract requires:
+    //
+    // 1. **Type agreement.** The CIF was built from the same `FfiTypeDesc` list that
+    //    drove argument marshalling in `call_ffi_function`, so the libffi type
+    //    descriptors, the concrete types of the `Arg` values, and the monomorphized
+    //    return type `R` all agree.
+    // 2. **Argument count.** `args` was assembled in `call_ffi_function` with exactly
+    //    one entry per declared argument plus an optional `RustCallStatus` pointer —
+    //    matching the CIF's argument count.
+    // 3. **Valid code pointer.** `code_ptr` was obtained via `dlsym` on the loaded
+    //    native library (see `LibraryHandle::lookup_symbol`), and the library remains
+    //    loaded for the lifetime of this process.
     unsafe {
         match ret_type {
             FfiTypeDesc::Void => {
@@ -459,12 +564,20 @@ fn call_with_ret_type(
     }
 }
 
-/// Convert a JS Uint8Array to a RustBufferC by calling rustbuffer_from_bytes.
+/// Convert a JS `Uint8Array` to a `RustBufferC` by copying the bytes through `rustbuffer_from_bytes`.
+///
+/// The flow is: read the typed-array's data pointer and length from the JS value,
+/// wrap them in a `ForeignBytesC` (which borrows the JS buffer), then call the
+/// library's `rustbuffer_from_bytes` to allocate a new Rust-owned copy.
 fn js_uint8array_to_rust_buffer(
     env: &Env,
     js_val: JsUnknown,
     rb_from_bytes_ptr: *const c_void,
 ) -> Result<RustBufferC> {
+    // SAFETY: `read_typedarray_data` calls `napi_get_typedarray_info` with the raw env
+    // and value handles from the current call context. Both are valid for the duration
+    // of this synchronous function. The returned `data_ptr` borrows the JS ArrayBuffer's
+    // backing store, which is kept alive by the GC while we hold the `js_val` reference.
     let (data_ptr, length) = unsafe { napi_utils::read_typedarray_data(env.raw(), js_val.raw()) }
         .ok_or_else(|| {
         napi::Error::from_reason("Expected a Uint8Array argument for RustBuffer".to_string())
@@ -485,6 +598,12 @@ fn js_uint8array_to_rust_buffer(
     };
 
     let mut call_status = RustCallStatusC::default();
+    // SAFETY: `rb_from_bytes_ptr` was obtained via `dlsym` for the symbol whose name
+    // was provided under `symbols.rustbufferFromBytes` in the JS definitions. We
+    // transmute it to `RustBufferFromBytesFn` — the correct signature for UniFFI's
+    // `rustbuffer_from_bytes` — which takes a `ForeignBytesC` by value and a
+    // `*mut RustCallStatusC`. The symbol was resolved at registration time, and the
+    // library remains loaded, so the pointer is valid.
     let from_bytes: RustBufferFromBytesFn = unsafe { std::mem::transmute(rb_from_bytes_ptr) };
     let rb = unsafe { from_bytes(foreign, &mut call_status as *mut RustCallStatusC) };
 
@@ -497,16 +616,26 @@ fn js_uint8array_to_rust_buffer(
     Ok(rb)
 }
 
-/// Convert a RustBufferC to a JS Uint8Array, then free the buffer.
+/// Convert a `RustBufferC` to a JS `Uint8Array`, then free the native buffer.
+///
+/// **Ordering matters.** We must create the JS typed array (which copies the bytes into
+/// a V8-managed `ArrayBuffer`) *before* freeing the `RustBufferC`. If we freed first,
+/// `rb.data` would be a dangling pointer during the copy.
 fn rust_buffer_to_js_uint8array(
     env: &Env,
     rb: RustBufferC,
     rb_free_ptr: *const c_void,
 ) -> Result<JsUnknown> {
     let raw_env = env.raw();
+    // SAFETY: `rb.data` points to a valid allocation of at least `rb.len` bytes,
+    // owned by the Rust allocator via the native library. `create_uint8array` copies
+    // the data into a new JS ArrayBuffer, so after this call we no longer need the
+    // original allocation.
     let typedarray = unsafe { napi_utils::create_uint8array(raw_env, rb.data, rb.len as usize)? };
 
-    // Free the RustBuffer (if non-null)
+    // Free the RustBuffer now that we have copied the data into JS-managed memory.
+    // SAFETY: `rb` is a valid RustBufferC returned by the native library, and
+    // `rb_free_ptr` is the corresponding `rustbuffer_free` symbol.
     unsafe { napi_utils::free_rustbuffer(rb, rb_free_ptr) };
 
     Ok(unsafe { JsUnknown::from_raw(raw_env, typedarray)? })

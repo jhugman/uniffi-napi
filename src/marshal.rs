@@ -1,3 +1,40 @@
+//! # The Scalar Marshalling Layer
+//!
+//! This module handles the mechanical conversion between JavaScript values and their C
+//! representations for *scalar* types: integers, floats, and opaque handles. It does not
+//! handle `RustBuffer`, callbacks, or struct (VTable) arguments — those are marshalled
+//! directly in [`crate::register::call_ffi_function`].
+//!
+//! The marshalling operates in three phases that mirror the lifecycle of a single FFI call:
+//!
+//! ## Phase 1: JS to Boxed Rust (`js_to_boxed`)
+//!
+//! Each JS value is converted to the correctly-typed Rust scalar and heap-allocated via
+//! `Box::new`. The heap allocation is necessary because libffi's [`Arg`] borrows a *pointer*
+//! to the value, and the value must outlive the `cif.call` invocation. (This is a known
+//! inefficiency — one heap allocation per scalar argument — but it keeps the marshalling
+//! code straightforward and type-safe. A future optimization could use a bump allocator
+//! or stack-allocated storage.)
+//!
+//! ## Phase 2: Boxed Rust to libffi Arg (`boxed_to_arg`)
+//!
+//! Each `Box<dyn Any>` is downcast to its concrete type and borrowed as a typed reference,
+//! then wrapped in a libffi [`Arg`]. Because the `Arg` borrows from the box, the box must
+//! outlive the arg vector. Both are held in `call_ffi_function`'s stack frame, so this
+//! invariant is maintained naturally.
+//!
+//! ## Phase 3: Boxed Return to JS (`ret_to_js`)
+//!
+//! After `cif.call`, the return value arrives as a `Box<dyn Any>` (type-erased in
+//! [`crate::register::call_with_ret_type`]). We downcast to the concrete type and create
+//! the appropriate JS value. The JS type mappings are:
+//!
+//! | Rust type         | JS type   | Rationale                                                 |
+//! |-------------------|-----------|-----------------------------------------------------------|
+//! | `u8`..`u32`, `i8`..`i32` | `number` | `f64` has 53 bits of mantissa — sufficient for all 32-bit integers. |
+//! | `u64`, `i64`      | `BigInt`  | 64-bit integers exceed `f64` precision.                   |
+//! | `f32`, `f64`      | `number`  | JS `number` is IEEE-754 `f64`.                            |
+
 use std::any::Any;
 
 use libffi::middle::{arg, Arg};
@@ -6,8 +43,14 @@ use napi::{JsBigInt, JsNumber, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::ffi_type::FfiTypeDesc;
 
-/// Convert a JS value to a boxed Rust value matching the given FFI type.
-/// Returns a Box<dyn Any> that holds the properly typed value.
+/// Convert a JS value to a heap-allocated Rust scalar matching `desc`.
+///
+/// The returned `Box<dyn Any>` holds the correctly-typed value (`u8`, `i32`, `u64`, etc.)
+/// and is later downcast in [`boxed_to_arg`] to create a libffi `Arg`.
+///
+/// For types that fit in a JS `number` (integers up to 32 bits, floats), we go through
+/// `JsNumber::get_double` and truncate. For 64-bit integers and handles, we expect a
+/// `BigInt` on the JS side and use `JsBigInt::get_u64` / `get_i64`.
 pub fn js_to_boxed(env: &Env, desc: &FfiTypeDesc, js_val: JsUnknown) -> Result<Box<dyn Any>> {
     match desc {
         FfiTypeDesc::UInt8 => {
@@ -41,11 +84,18 @@ pub fn js_to_boxed(env: &Env, desc: &FfiTypeDesc, js_val: JsUnknown) -> Result<B
             Ok(Box::new(v as i32))
         }
         FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => {
+            // SAFETY: `JsBigInt::from_raw` reconstructs a napi `JsBigInt` wrapper from
+            // raw handles. `env.raw()` is the valid `napi_env` for the current call
+            // context, and `js_val.raw()` is the `napi_value` we received as an argument
+            // — both are live handles in the current scope. The `from_raw` call does not
+            // take ownership; it merely wraps the handles for the typed API.
             let bigint = unsafe { JsBigInt::from_raw(env.raw(), js_val.raw())? };
             let (v, _lossless) = bigint.get_u64()?;
             Ok(Box::new(v))
         }
         FfiTypeDesc::Int64 => {
+            // SAFETY: Same as the UInt64/Handle arm above — `env` and `js_val` are
+            // valid napi handles from the current call context.
             let bigint = unsafe { JsBigInt::from_raw(env.raw(), js_val.raw())? };
             let (v, _lossless) = bigint.get_i64()?;
             Ok(Box::new(v))
@@ -67,8 +117,12 @@ pub fn js_to_boxed(env: &Env, desc: &FfiTypeDesc, js_val: JsUnknown) -> Result<B
     }
 }
 
-/// Create a libffi `Arg` from a boxed value and its type descriptor.
-/// The Arg borrows from the boxed value, so the box must outlive the Arg.
+/// Create a libffi [`Arg`] by borrowing the concrete value inside a type-erased box.
+///
+/// The lifetime `'a` ties the `Arg` to the box, enforcing at compile time that the
+/// heap-allocated value outlives the argument vector passed to `cif.call`. Each arm
+/// downcasts to the same type that [`js_to_boxed`] originally boxed, so the `unwrap`
+/// is safe — a type mismatch here would indicate a bug in the type-descriptor pipeline.
 pub fn boxed_to_arg<'a>(desc: &FfiTypeDesc, boxed: &'a dyn Any) -> Arg<'a> {
     match desc {
         FfiTypeDesc::UInt8 => arg(boxed.downcast_ref::<u8>().unwrap()),
@@ -89,8 +143,13 @@ pub fn boxed_to_arg<'a>(desc: &FfiTypeDesc, boxed: &'a dyn Any) -> Arg<'a> {
     }
 }
 
-/// Convert a raw return value to a JS value.
-/// This is called after cif.call() with the correct return type R.
+/// Convert a type-erased return value from `cif.call` into the corresponding JS value.
+///
+/// Called by `call_ffi_function` after the FFI call completes. The `boxed` value was
+/// produced by [`call_with_ret_type`](crate::register::call_with_ret_type), which
+/// monomorphized on the correct Rust type and boxed the result. We downcast and create
+/// the JS representation: `number` for integers <= 32 bits and all floats, `BigInt`
+/// for 64-bit integers, `undefined` for void.
 pub fn ret_to_js(env: &Env, desc: &FfiTypeDesc, boxed: &dyn Any) -> Result<JsUnknown> {
     match desc {
         FfiTypeDesc::Void => Ok(env.get_undefined()?.into_unknown()),

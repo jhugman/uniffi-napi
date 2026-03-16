@@ -1,3 +1,55 @@
+//! # VTables: the Object Protocol
+//!
+//! UniFFI represents trait implementations as *VTables* — C structs whose fields are
+//! function pointers. When JavaScript implements a UniFFI trait, we must construct a
+//! C-compatible struct where each field is a function pointer that, when called by Rust,
+//! routes to the corresponding JS method. This module builds those structs.
+//!
+//! ## The Three Layers
+//!
+//! Each VTable callback involves three layers of indirection:
+//!
+//! 1. **The C caller** invokes a function pointer stored in the VTable struct.
+//! 2. **libffi** routes that call to our [`vtable_trampoline_callback`].
+//! 3. **The trampoline** either calls JS directly (same-thread) or dispatches via
+//!    `ThreadsafeFunction` (cross-thread).
+//!
+//! ## Cross-thread dispatch with return values
+//!
+//! Unlike simple callbacks (fire-and-forget), VTable methods often return values. The
+//! cross-thread path must therefore be *blocking*: it serializes the arguments into a
+//! [`VTableCallRequest`], sends it to the main thread via a `ThreadsafeFunction`, and
+//! then *waits* on a `sync_channel` for the [`VTableCallResponse`] containing the
+//! return value. This is a rendezvous pattern — the calling thread blocks until JS
+//! produces the answer.
+//!
+//! ## The `ffi_arg` widening convention
+//!
+//! When a libffi closure returns a value, integer types smaller than the machine word
+//! must be widened to `ffi_arg` (unsigned) or `ffi_sarg` (signed). This is a libffi
+//! convention documented in the libffi manual, not a Rust quirk. The
+//! [`write_return_value`] and [`write_raw_return_value`] functions implement this
+//! widening. `Float32` and `Float64` are written at their natural width. Types >= 64
+//! bits (`Int64`, `UInt64`, `RustBuffer`) are also written at natural width since they
+//! are already at least as wide as `ffi_arg` on 64-bit platforms.
+//!
+//! ## `RustCallStatusForVTable`
+//!
+//! A minimal `#[repr(C)]` struct containing only the `code: i8` field. The full
+//! `RustCallStatus` has an `error_buf` (`RustBuffer`) following the code, but the
+//! trampoline only needs to read/write the code field. Because `code` is the first
+//! field, this partial view is layout-compatible — we can safely cast a
+//! `*mut RustCallStatus` to `*mut RustCallStatusForVTable` and access the code.
+//!
+//! ## Lifetime management
+//!
+//! The userdata, closures, and `Vec` backing the VTable struct are all intentionally
+//! leaked (`Box::into_raw` + `mem::forget`). This is necessary because the Rust library
+//! holds function pointers into these allocations and may call them at any time from any
+//! thread. There is no mechanism to know when the library discards a VTable, so the
+//! allocations live for the process lifetime. The `napi_ref` preventing GC of the JS
+//! functions is similarly permanent.
+
 use std::collections::HashMap;
 use std::ffi::c_void;
 
@@ -16,13 +68,20 @@ use crate::napi_utils;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 /// Packed arguments for cross-thread VTable callback dispatch.
+///
+/// When a VTable method is called from a non-JS thread, we cannot touch JS values
+/// directly. Instead, the calling thread reads the C arguments into portable Rust
+/// types ([`RawCallbackArg`]), bundles them into this struct, and sends it to the
+/// JS thread via a `ThreadsafeFunction`. If a return value is needed, the
+/// `response_tx` channel provides the rendezvous point where the calling thread
+/// blocks until JS produces the answer.
 struct VTableCallRequest {
     /// C argument values, read from raw pointers on the calling thread.
     args: Vec<RawCallbackArg>,
     /// If has_rust_call_status, the initial code value from C.
     rust_call_status_code: i8,
     /// Channel to send the result back to the calling thread.
-    /// None for fire-and-forget (non-blocking) callbacks.
+    /// `None` for fire-and-forget (non-blocking) callbacks such as the free callback.
     response_tx: Option<std::sync::mpsc::SyncSender<VTableCallResponse>>,
 }
 
@@ -89,8 +148,18 @@ pub fn parse_structs(env: &Env, definitions: &JsObject) -> Result<HashMap<String
 }
 
 /// Userdata for VTable callback trampolines.
-/// Unlike TrampolineUserdata, this supports return values and RustCallStatus handling.
-/// Stores a persistent reference to the JS function so it survives GC.
+///
+/// Unlike [`crate::callback::TrampolineUserdata`] (used for simple callbacks), this
+/// struct supports *return values* and *`RustCallStatus` handling* — both of which are
+/// needed for the bidirectional VTable protocol.
+///
+/// The JS function is stored as a `napi_ref` (persistent reference with refcount = 1)
+/// rather than a raw `napi_value`, because the VTable may outlive any single JS scope.
+/// The reference prevents the garbage collector from reclaiming the function.
+///
+/// The `tsfn` field is `None` during construction and filled in by
+/// [`build_vtable_struct`] before any concurrent access is possible. See the
+/// "careful sequencing" discussion in that function's documentation.
 pub struct VTableTrampolineUserdata {
     pub raw_env: napi::sys::napi_env,
     pub fn_ref: napi::sys::napi_ref,
@@ -98,18 +167,44 @@ pub struct VTableTrampolineUserdata {
     pub arg_types: Vec<FfiTypeDesc>,
     /// The return type of this callback.
     pub ret_type: FfiTypeDesc,
-    /// Whether the last C arg is a &mut RustCallStatus.
+    /// Whether the last C arg is a `&mut RustCallStatus`.
     pub has_rust_call_status: bool,
     tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
+    /// Pointer to the library's `rustbuffer_from_bytes` function, resolved via `dlsym`.
+    /// Used when the return type is `RustBuffer` to allocate a buffer from byte data.
     pub rb_from_bytes_ptr: *const c_void,
+    /// Pointer to the library's `rustbuffer_free` function, resolved via `dlsym`.
+    /// Used to free `RustBuffer` arguments received from C before converting to JS.
     pub rb_free_ptr: *const c_void,
 }
 
-// Safety: raw_env and raw_fn are only accessed on the main thread.
+// SAFETY: `raw_env` and `fn_ref` are only dereferenced on the main (JS) thread.
+// The `tsfn` field is itself `Send` + `Sync`. The `rb_from_bytes_ptr` and
+// `rb_free_ptr` are plain C function pointers into a loaded shared library and
+// are safe to call from any thread. The struct is leaked to a `'static`
+// reference before any concurrent access occurs, so there are no data races.
 unsafe impl Send for VTableTrampolineUserdata {}
 unsafe impl Sync for VTableTrampolineUserdata {}
 
-/// The trampoline for VTable callbacks. Handles return values and RustCallStatus.
+/// The top-level trampoline for VTable callbacks.
+///
+/// This is the function pointer stored in each libffi `Closure`. When Rust calls a
+/// VTable function pointer, libffi invokes this trampoline with:
+/// - `_cif`: the call interface (unused — we already know the types from `userdata`)
+/// - `result`: a libffi-allocated buffer where we must write the return value
+/// - `args`: an array of pointers to the C argument values
+/// - `userdata`: our leaked [`VTableTrampolineUserdata`] containing type info and JS refs
+///
+/// The trampoline checks which thread it is on and dispatches accordingly.
+///
+/// # Safety
+///
+/// This function is `unsafe extern "C"` because it is called by libffi's closure
+/// mechanism with raw C pointers. The caller (libffi) guarantees:
+/// - `result` points to a buffer large enough for the declared return type.
+/// - `args` contains exactly as many pointers as the CIF declared, each pointing
+///   to a value of the corresponding type.
+/// - `userdata` is the same reference we passed to `Closure::new`.
 pub unsafe extern "C" fn vtable_trampoline_callback(
     _cif: &low::ffi_cif,
     result: &mut c_void,
@@ -126,6 +221,14 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
     vtable_trampoline_main_thread(result, args, userdata);
 }
 
+/// Same-thread path: we are already on the JS main thread, so we can call the
+/// JS function directly via N-API without any serialization overhead.
+///
+/// # Safety
+///
+/// Caller must ensure this is called on the main thread (the same thread that
+/// owns `userdata.raw_env`). The `args` and `result` pointers come from libffi
+/// and satisfy the same invariants as documented on [`vtable_trampoline_callback`].
 unsafe fn vtable_trampoline_main_thread(
     result: &mut c_void,
     args: *const *const c_void,
@@ -133,6 +236,9 @@ unsafe fn vtable_trampoline_main_thread(
 ) {
     let env = Env::from_raw(userdata.raw_env);
 
+    // SAFETY: We are on the main thread. `fn_ref` was created with refcount=1
+    // by `napi_create_reference` in `build_vtable_struct`, so the JS function
+    // is alive and the reference is valid.
     let mut raw_fn: napi::sys::napi_value = std::ptr::null_mut();
     let status =
         napi::sys::napi_get_reference_value(userdata.raw_env, userdata.fn_ref, &mut raw_fn);
@@ -140,6 +246,8 @@ unsafe fn vtable_trampoline_main_thread(
         return;
     }
 
+    // SAFETY: `raw_fn` is a valid napi_value obtained from the reference above,
+    // and we are on the correct env thread.
     let js_fn = match napi::JsFunction::from_raw(userdata.raw_env, raw_fn) {
         Ok(f) => f,
         Err(_) => return,
@@ -149,6 +257,8 @@ unsafe fn vtable_trampoline_main_thread(
     let mut js_args: Vec<napi::JsUnknown> = Vec::with_capacity(declared_count + 1);
 
     for (i, desc) in userdata.arg_types.iter().enumerate() {
+        // SAFETY: libffi's CIF guarantees `args` has at least `declared_count`
+        // entries, each pointing to a value whose type matches the CIF declaration.
         let arg_ptr = *args.add(i);
         let js_val = match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) {
             Ok(v) => v,
@@ -157,9 +267,21 @@ unsafe fn vtable_trampoline_main_thread(
         js_args.push(js_val);
     }
 
+    // Extract the RustCallStatus pointer, if this callback uses one.
+    //
+    // The RustCallStatus is passed by the Rust caller as the final argument.
+    // Because it is a *pointer* argument, libffi passes it as a pointer-to-pointer:
+    // `args[declared_count]` points to a `*mut RustCallStatus` on the caller's stack.
+    // We dereference once to get the inner pointer, then cast to our minimal
+    // `RustCallStatusForVTable` which accesses only the `code` field.
     let mut status_ptr: *mut RustCallStatusForVTable = std::ptr::null_mut();
     if userdata.has_rust_call_status {
+        // SAFETY: The CIF was built with `declared_count + 1` args (the extra one
+        // being the RustCallStatus pointer), so this index is in bounds.
         let rcs_arg_ptr = *args.add(declared_count);
+        // SAFETY: `rcs_arg_ptr` points to a `*mut RustCallStatus`. Casting to
+        // `*mut RustCallStatusForVTable` is layout-compatible because `code: i8`
+        // is the first field of both structs.
         status_ptr = *(rcs_arg_ptr as *const *mut RustCallStatusForVTable);
 
         let code = if !status_ptr.is_null() {
@@ -183,11 +305,14 @@ unsafe fn vtable_trampoline_main_thread(
 
     let call_result = js_fn.call(None, &js_args);
 
+    // Write back the (possibly updated) RustCallStatus code from JS.
     if userdata.has_rust_call_status && !status_ptr.is_null() {
         if let Some(js_status_unknown) = js_args.last() {
             if let Ok(js_status_obj) = JsObject::from_raw(userdata.raw_env, js_status_unknown.raw())
             {
                 if let Ok(code_val) = js_status_obj.get_named_property::<i32>("code") {
+                    // SAFETY: `status_ptr` is non-null (checked above) and points
+                    // to the caller's stack-allocated RustCallStatus.
                     (*status_ptr).code = code_val as i8;
                 }
             }
@@ -205,6 +330,21 @@ unsafe fn vtable_trampoline_main_thread(
     }
 }
 
+/// Cross-thread path: the calling thread is *not* the JS main thread.
+///
+/// We cannot touch any N-API values here. Instead we:
+/// 1. Read each C argument into a portable [`RawCallbackArg`] (pure memcpy, no JS).
+/// 2. Bundle them into a [`VTableCallRequest`].
+/// 3. If a return value or RustCallStatus writeback is needed (the common case),
+///    create a `sync_channel(1)` rendezvous, send the request via the TSF, and
+///    block on `rx.recv()` until the JS thread fills in the response.
+/// 4. If no return value is needed (e.g. the free callback), fire-and-forget.
+///
+/// # Safety
+///
+/// Same preconditions as [`vtable_trampoline_callback`]. Additionally, caller must
+/// ensure this is called from a non-main thread (otherwise the blocking recv would
+/// deadlock, since the JS thread is the one that must produce the response).
 unsafe fn vtable_trampoline_cross_thread(
     result: &mut c_void,
     args: *const *const c_void,
@@ -215,10 +355,12 @@ unsafe fn vtable_trampoline_cross_thread(
         None => return,
     };
 
-    // Read C args into portable values
+    // Read C args into portable Rust values (no JS interaction needed).
     let declared_count = userdata.arg_types.len();
     let mut raw_args = Vec::with_capacity(declared_count);
     for (i, desc) in userdata.arg_types.iter().enumerate() {
+        // SAFETY: libffi's CIF guarantees `args` has at least `declared_count`
+        // entries, each pointing to a value of the corresponding type.
         let arg_ptr = *args.add(i);
         let raw_arg = match read_raw_arg(desc, arg_ptr, userdata.rb_free_ptr) {
             Some(a) => a,
@@ -227,14 +369,18 @@ unsafe fn vtable_trampoline_cross_thread(
         raw_args.push(raw_arg);
     }
 
-    // Implicit rule: needs_blocking if callback returns a value or has RustCallStatus
+    // We need the blocking rendezvous whenever the caller expects something back:
+    // either a return value or an updated RustCallStatus code.
     let needs_blocking =
         !matches!(userdata.ret_type, FfiTypeDesc::Void) || userdata.has_rust_call_status;
 
-    // Read RustCallStatus code if present
+    // Read RustCallStatus code if present (same pointer-to-pointer pattern as
+    // the main-thread path — see the SAFETY comments there).
     let mut status_ptr: *mut RustCallStatusForVTable = std::ptr::null_mut();
     let rcs_code = if userdata.has_rust_call_status {
+        // SAFETY: CIF has `declared_count + 1` args; index is in bounds.
         let rcs_arg_ptr = *args.add(declared_count);
+        // SAFETY: pointer-to-pointer dereference; layout-compatible cast.
         status_ptr = *(rcs_arg_ptr as *const *mut RustCallStatusForVTable);
         if !status_ptr.is_null() {
             (*status_ptr).code
@@ -246,7 +392,9 @@ unsafe fn vtable_trampoline_cross_thread(
     };
 
     if needs_blocking {
-        // Blocking path: create rendezvous channel, wait for JS thread response
+        // Blocking path: create a rendezvous channel. The capacity of 1 suffices
+        // because there is exactly one producer (the JS thread handler) and one
+        // consumer (this thread).
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
 
         let request = VTableCallRequest {
@@ -257,6 +405,7 @@ unsafe fn vtable_trampoline_cross_thread(
 
         tsfn.call(request, ThreadsafeFunctionCallMode::Blocking);
 
+        // Block until the JS thread processes the request and sends back the response.
         if let Ok(response) = rx.recv() {
             if let Some(ref raw_ret) = response.return_value {
                 write_raw_return_value(
@@ -267,11 +416,13 @@ unsafe fn vtable_trampoline_cross_thread(
                 );
             }
             if userdata.has_rust_call_status && !status_ptr.is_null() {
+                // SAFETY: `status_ptr` is non-null (checked above) and points
+                // to the Rust caller's stack-allocated RustCallStatus.
                 (*status_ptr).code = response.rust_call_status_code;
             }
         }
     } else {
-        // Non-blocking path: fire-and-forget (e.g. free callbacks)
+        // Non-blocking path: fire-and-forget (e.g. the VTable's free callback).
         let request = VTableCallRequest {
             args: raw_args,
             rust_call_status_code: rcs_code,
@@ -282,9 +433,30 @@ unsafe fn vtable_trampoline_cross_thread(
     }
 }
 
-/// Write the JS return value into the libffi result buffer.
-/// For closures, libffi expects integer types smaller than `ffi_arg` to be
-/// written as `ffi_arg` (typically u64 on 64-bit platforms).
+/// Write a JS return value into the libffi result buffer (same-thread path).
+///
+/// This function converts a `JsUnknown` returned by a JS callback into the raw
+/// bytes that libffi expects in the `result` buffer.
+///
+/// # The `ffi_arg` widening convention
+///
+/// For closure return values, libffi requires integer types *smaller* than the
+/// machine word to be widened:
+/// - Signed types (`Int8`, `Int16`, `Int32`) are sign-extended to `ffi_sarg`.
+/// - Unsigned types (`UInt8`, `UInt16`, `UInt32`) are zero-extended to `ffi_arg`.
+/// - `Float32` and `Float64` are written at their natural width.
+/// - `Int64`, `UInt64`, `Handle`, and `RustBuffer` are already >= 64 bits on
+///   64-bit platforms, so no widening is needed.
+///
+/// # Safety
+///
+/// - `result` must point to a libffi-allocated buffer with sufficient size for the
+///   declared return type.
+/// - `raw_env` must be the current thread's valid napi environment.
+/// - `rb_from_bytes_ptr` (when non-null) must point to the library's
+///   `rustbuffer_from_bytes` function with the signature [`RustBufferFromBytesFn`].
+///   The `std::mem::transmute` is safe because this pointer was resolved via `dlsym`
+///   from the loaded library and has the correct function signature.
 unsafe fn write_return_value(
     result: &mut c_void,
     ret_type: &FfiTypeDesc,
@@ -292,6 +464,9 @@ unsafe fn write_return_value(
     js_ret: napi::JsUnknown,
     rb_from_bytes_ptr: *const c_void,
 ) {
+    // SAFETY: `result` points to libffi's result buffer, which is guaranteed to be
+    // large enough for the declared return type. Each arm writes exactly the type
+    // (or its widened form) that the CIF declared.
     let result_ptr = result as *mut c_void;
     match ret_type {
         FfiTypeDesc::Void => {}
@@ -366,16 +541,21 @@ unsafe fn write_return_value(
             }
         }
         FfiTypeDesc::RustBuffer => {
-            // Extract Uint8Array data
+            // Extract Uint8Array data from the JS return value.
             let (data, length) = match napi_utils::read_typedarray_data(raw_env, js_ret.raw()) {
                 Some(v) => v,
                 None => return, // Not a typed array — silently fail like other arms
             };
 
-            // Create ForeignBytes and call rustbuffer_from_bytes
+            // Create ForeignBytes and call rustbuffer_from_bytes to allocate a
+            // Rust-owned buffer. This is a pure C call, safe from any thread.
             if rb_from_bytes_ptr.is_null() || length > i32::MAX as usize {
                 return;
             }
+            // SAFETY: `rb_from_bytes_ptr` was resolved via `dlsym` from the loaded
+            // UniFFI library and has the `RustBufferFromBytesFn` signature. The
+            // transmute is safe because the pointer targets a function with exactly
+            // this calling convention and parameter types.
             let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
             let foreign = ForeignBytesC {
                 len: length as i32,
@@ -387,7 +567,7 @@ unsafe fn write_return_value(
                 return;
             }
 
-            // Write RustBufferC to result buffer
+            // Write RustBufferC to result buffer (natural width, no widening needed).
             *(result_ptr as *mut RustBufferC) = rb;
         }
         _ => {
@@ -397,14 +577,28 @@ unsafe fn write_return_value(
     }
 }
 
-/// Write a RawCallbackArg return value into the libffi result buffer.
-/// Same ffi_arg/ffi_sarg widening rules as write_return_value.
+/// Write a [`RawCallbackArg`] return value into the libffi result buffer (cross-thread path).
+///
+/// This is the cross-thread counterpart to [`write_return_value`]. The JS thread has
+/// already converted the JS return value into a [`RawCallbackArg`]; this function
+/// writes it into the libffi result buffer on the *calling* thread.
+///
+/// The same `ffi_arg`/`ffi_sarg` widening rules apply — see [`write_return_value`] for
+/// the rationale.
+///
+/// # Safety
+///
+/// - `result` must point to libffi's result buffer with sufficient size.
+/// - `rb_from_bytes_ptr` (when non-null) must be a valid `RustBufferFromBytesFn`.
+///   `rustbuffer_from_bytes` is a pure C function, safe to call from any thread.
 unsafe fn write_raw_return_value(
     result: &mut c_void,
     ret_type: &FfiTypeDesc,
     raw_ret: &RawCallbackArg,
     rb_from_bytes_ptr: *const c_void,
 ) {
+    // SAFETY: Each arm writes exactly the declared return type (or its widened form)
+    // into the libffi result buffer, which is guaranteed to be large enough.
     let result_ptr = result as *mut c_void;
     match (ret_type, raw_ret) {
         (FfiTypeDesc::Int8, RawCallbackArg::Int8(v)) => {
@@ -442,7 +636,9 @@ unsafe fn write_raw_return_value(
                 return;
             }
 
-            // rustbuffer_from_bytes is a pure C function, safe to call from the calling thread.
+            // SAFETY: `rb_from_bytes_ptr` was resolved via `dlsym` and has the
+            // `RustBufferFromBytesFn` signature. `rustbuffer_from_bytes` is a pure
+            // C function with no thread-affinity requirements, safe to call here.
             let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
             if data.len() > i32::MAX as usize {
                 return;
@@ -471,8 +667,20 @@ unsafe fn write_raw_return_value(
     }
 }
 
-/// Handler that runs on the JS thread when a VTableCallRequest is received via TSF.
+/// Handler that runs on the JS main thread when a [`VTableCallRequest`] arrives via TSF.
+///
+/// This is the "receiving end" of the cross-thread dispatch. It:
+/// 1. Resolves the persistent JS function reference.
+/// 2. Converts each [`RawCallbackArg`] back into a `JsUnknown`.
+/// 3. Calls the JS function.
+/// 4. Converts the JS return value into a [`RawCallbackArg`].
+/// 5. Sends a [`VTableCallResponse`] back through the rendezvous channel,
+///    unblocking the calling thread.
+///
+/// If any step fails, `send_default` sends a default response so the calling
+/// thread does not deadlock.
 fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: VTableCallRequest) {
+    // Helper: send a default (empty) response so the calling thread never hangs.
     let send_default = |req: &VTableCallRequest| {
         if let Some(ref tx) = req.response_tx {
             let _ = tx.send(VTableCallResponse {
@@ -482,6 +690,9 @@ fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: 
         }
     };
 
+    // SAFETY: We are on the main thread (guaranteed by ThreadsafeFunction dispatch).
+    // `fn_ref` was created with refcount=1 by `napi_create_reference`, so the JS
+    // function is alive and the reference is valid.
     let mut raw_fn: napi::sys::napi_value = std::ptr::null_mut();
     let status = unsafe {
         napi::sys::napi_get_reference_value(userdata.raw_env, userdata.fn_ref, &mut raw_fn)
@@ -491,6 +702,8 @@ fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: 
         return;
     }
 
+    // SAFETY: `raw_fn` is a valid napi_value obtained from the reference above,
+    // and we are on the correct env thread.
     let js_fn = match unsafe { napi::JsFunction::from_raw(userdata.raw_env, raw_fn) } {
         Ok(f) => f,
         Err(_) => {
@@ -576,24 +789,63 @@ fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: 
     }
 }
 
-/// Minimal RustCallStatus layout for reading/writing through VTable callbacks.
+/// Minimal `#[repr(C)]` projection of `RustCallStatus`, containing only the `code` field.
+///
+/// The full `RustCallStatus` struct (defined in the UniFFI runtime) looks like:
+///
+/// ```text
+/// #[repr(C)]
+/// struct RustCallStatus {
+///     code: i8,
+///     error_buf: RustBuffer,
+/// }
+/// ```
+///
+/// The trampoline only needs to read and write the `code` field. Because `code` is the
+/// *first* field and both structs are `#[repr(C)]`, this partial view is layout-compatible:
+/// a `*mut RustCallStatus` can be safely cast to `*mut RustCallStatusForVTable` and the
+/// `code` field will be at the correct offset (zero).
 #[repr(C)]
 struct RustCallStatusForVTable {
     code: i8,
-    // error_buf follows but we don't need to touch it in the trampoline
+    // The `error_buf: RustBuffer` field follows in the full struct, but we never
+    // touch it in the trampoline — the Rust caller manages it.
 }
 
-/// Build a C struct (VTable) from a JS object.
+/// Build a C-compatible VTable struct from a JS object implementing a UniFFI trait.
 ///
-/// For each field that is a `Callback(name)`:
-/// 1. Look up the callback definition
-/// 2. Get the JS function from the object property
-/// 3. Create a long-lived trampoline (leaked) that handles return values and RustCallStatus
-/// 4. Store the function pointer in the struct memory
+/// For each field in the struct definition that is a `Callback(name)`:
+/// 1. Look up the callback definition to learn the parameter and return types.
+/// 2. Extract the corresponding JS function from the JS object.
+/// 3. Create a persistent `napi_ref` (refcount = 1) to prevent GC of the function.
+/// 4. Build a libffi `Closure` backed by [`vtable_trampoline_callback`].
+/// 5. Store the closure's code pointer in the VTable data array.
 ///
-/// Returns a `Vec<*const c_void>` where each element is a function pointer.
-/// The Vec is leaked so the struct memory lives as long as the VTable is needed.
-/// Returns a raw pointer to the struct data (pointer to first element).
+/// ## Careful sequencing of `VTableTrampolineUserdata` initialization
+///
+/// The userdata struct is heap-allocated, then leaked via `Box::into_raw` *before*
+/// the `ThreadsafeFunction` is created. This is necessary because the TSF closure
+/// captures the userdata address. The sequence is:
+///
+/// 1. `Box::into_raw(userdata)` — gives us a stable raw pointer.
+/// 2. Create the TSF, whose closure captures `userdata_ptr as usize`.
+/// 3. Write the TSF into `(*userdata_ptr).tsfn` via raw pointer mutation.
+/// 4. *Only then* create `&'static VTableTrampolineUserdata` from the raw pointer.
+///
+/// After step 4, no further mutation occurs. The `&'static` reference is passed to
+/// `Closure::new`, which requires `'static` because the closure may be called at
+/// any time for the lifetime of the process.
+///
+/// ## Intentional leaks
+///
+/// The `Closure`, the `VTableTrampolineUserdata`, and the `Vec<*const c_void>`
+/// backing the struct are all leaked (`mem::forget` / `Box::into_raw`). This is
+/// *not* a memory bug — these allocations must live for the process lifetime because
+/// the Rust library holds raw function pointers into them and may call them at any
+/// time from any thread. There is no VTable deregistration protocol in UniFFI.
+///
+/// Returns a raw pointer to the first element of the leaked `Vec`, which is the
+/// C-compatible VTable struct pointer expected by the Rust library.
 pub fn build_vtable_struct(
     env: &Env,
     struct_def: &StructDef,
@@ -615,12 +867,19 @@ pub fn build_vtable_struct(
                     ))
                 })?;
 
-                // Get the JS function from the object
+                // Get the JS function from the object.
                 let js_fn_val: JsUnknown = js_obj.get_named_property(&field.name)?;
+                // SAFETY: Extracting the raw napi_value from a live JsUnknown on the
+                // current env thread.
                 let raw_fn_val = unsafe { js_fn_val.raw() };
 
-                // Create a persistent reference to prevent GC
+                // Create a persistent reference (refcount = 1) to prevent GC.
+                // This reference is intentionally never deleted — see "Lifetime
+                // management" in the module docs.
                 let mut fn_ref: napi::sys::napi_ref = std::ptr::null_mut();
+                // SAFETY: `env.raw()` is the current valid env, `raw_fn_val` is a
+                // live napi_value. The initial refcount of 1 keeps the JS function
+                // alive for the process lifetime.
                 let ref_status = unsafe {
                     napi::sys::napi_create_reference(env.raw(), raw_fn_val, 1, &mut fn_ref)
                 };
@@ -652,8 +911,9 @@ pub fn build_vtable_struct(
                     rb_free_ptr,
                 });
 
-                // Leak userdata to a raw pointer for stable address.
+                // Leak userdata to a raw pointer for a stable address.
                 // Do NOT create &'static ref yet — we still need to mutate tsfn.
+                // This is step 1 of the sequencing described in the function docs.
                 let userdata_ptr = Box::into_raw(userdata);
 
                 // Create a no-op JS function for the TSF base. The TSF auto-calls its base
@@ -663,8 +923,9 @@ pub fn build_vtable_struct(
                 let noop_fn =
                     env.create_function_from_closure("vtable_tsfn_noop", |_ctx| Ok(()))?;
 
-                // TSF closure captures raw pointer, not &'static ref.
-                // Cast to usize so the closure is Send (raw pointers aren't Send).
+                // Step 2: create the TSF. The closure captures the userdata address
+                // as a `usize` rather than a raw pointer, because raw pointers are
+                // not `Send` and the closure must be `Send` for `ThreadsafeFunction`.
                 let tsfn: ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal> = {
                     let ud_addr = userdata_ptr as usize;
                     noop_fn.create_threadsafe_function(
@@ -672,6 +933,13 @@ pub fn build_vtable_struct(
                         move |ctx: napi::threadsafe_function::ThreadSafeCallContext<
                             VTableCallRequest,
                         >| {
+                            // SAFETY: `ud_addr` was obtained from `Box::into_raw` above,
+                            // so the allocation is valid and leaked (lives forever).
+                            // `ud_addr` was set before any concurrent access is possible
+                            // (the TSF hasn't been called yet — it is created here and
+                            // only becomes callable after `tsfn.call()` is invoked by a
+                            // trampoline, which cannot happen until `build_vtable_struct`
+                            // returns the VTable pointer to the Rust library).
                             let ud = unsafe { &*(ud_addr as *const VTableTrampolineUserdata) };
                             vtable_tsfn_handler(&ctx.env, ud, ctx.value);
                             Ok(Vec::<napi::JsUnknown>::new())
@@ -683,21 +951,29 @@ pub fn build_vtable_struct(
                 let mut tsfn = tsfn;
                 tsfn.unref(env)?;
 
-                // Store TSF in userdata (still using raw pointer, before creating &'static ref)
+                // Step 3: store the TSF into the userdata via raw pointer mutation.
+                // SAFETY: `userdata_ptr` is a valid, uniquely-owned heap allocation
+                // (no other references exist yet). We are still on the main thread
+                // and no concurrent access is possible.
                 unsafe {
                     (*userdata_ptr).tsfn = Some(tsfn);
                 }
 
-                // NOW safe to create the &'static reference — all mutations are done
+                // Step 4: all mutation is complete. NOW it is safe to create the
+                // `&'static` reference that `Closure::new` requires.
+                // SAFETY: The allocation is leaked (lives forever) and fully
+                // initialized. No further mutation occurs after this point.
                 let userdata_ref: &'static VTableTrampolineUserdata = unsafe { &*userdata_ptr };
 
                 // Create closure
                 let closure = Closure::new(cif, vtable_trampoline_callback, userdata_ref);
 
-                // Extract function pointer
+                // Extract the C function pointer from the closure.
                 let fn_ptr: *const c_void = *closure.code_ptr() as *const std::ffi::c_void;
 
-                // Leak the closure so the function pointer stays valid
+                // Intentionally leak the closure. The function pointer we extracted
+                // above points into the closure's executable trampoline memory. If
+                // the closure were dropped, the function pointer would dangle.
                 std::mem::forget(closure);
 
                 vtable_data.push(fn_ptr);
@@ -711,7 +987,9 @@ pub fn build_vtable_struct(
         }
     }
 
-    // Leak the Vec so the struct memory persists
+    // Intentionally leak the Vec so the VTable struct memory persists for the
+    // process lifetime. The Rust library holds a raw pointer to this array and
+    // reads function pointers from it on every VTable method call.
     let ptr = vtable_data.as_ptr() as *const c_void;
     std::mem::forget(vtable_data);
 

@@ -1,8 +1,30 @@
+//! The abstract type language that drives the entire bridge.
+//!
+//! [`FfiTypeDesc`] is the Rosetta Stone of this system. Every JS-provided type
+//! description — a tagged object like `{ tag: 'Int32' }` or
+//! `{ tag: 'Reference', inner: { tag: 'Struct', name: 'MyStruct' } }` — is parsed
+//! into one of these variants. From that single enum, every downstream decision
+//! flows:
+//!
+//! - **CIF construction** ([`crate::cif::ffi_type_for`]): maps each variant to a
+//!   concrete `libffi::middle::Type` so libffi knows the calling convention.
+//! - **Marshalling** ([`crate::marshal`]): determines how JS values are converted
+//!   to/from C-compatible byte representations.
+//! - **Callback handling** ([`crate::callback`]): decides how to pack/unpack
+//!   arguments when Rust invokes a JS-provided callback.
+//!
+//! The enum is **recursive**: `Reference` and `MutReference` wrap an inner
+//! `FfiTypeDesc` in a `Box`, reflecting the pointer-to-T pattern that UniFFI uses
+//! for pass-by-reference structs and mutable out-parameters.
+
 use napi::bindgen_prelude::*;
 use napi::{JsObject, Result};
 
-/// Mirrors uniffi_bindgen's FfiType enum.
-/// Parsed from tagged JS objects like { tag: 'Int32' } or { tag: 'Callback', name: 'cb_name' }.
+/// The abstract type descriptor parsed from JS-provided definitions.
+///
+/// Mirrors UniFFI's `FfiType` enum. Each variant represents a type that can
+/// appear in a foreign function signature. Parsed from tagged JS objects like
+/// `{ tag: 'Int32' }` or `{ tag: 'Callback', name: 'cb_name' }`.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum FfiTypeDesc {
@@ -29,7 +51,10 @@ pub enum FfiTypeDesc {
 }
 
 impl FfiTypeDesc {
-    /// Parse from a JS object with { tag: string, ...params }.
+    /// Parse an `FfiTypeDesc` from a JS object with shape `{ tag: string, ...params }`.
+    ///
+    /// Recursively descends into `Reference` and `MutReference` wrappers,
+    /// building the boxed inner type from the `inner` property of the JS object.
     #[allow(clippy::only_used_in_recursion)]
     pub fn from_js_object(env: &Env, obj: &JsObject) -> Result<Self> {
         let tag: String = obj.get_named_property::<String>("tag")?;

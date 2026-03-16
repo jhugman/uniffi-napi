@@ -1,12 +1,36 @@
+//! Mapping from the abstract type system to libffi's concrete type system.
+//!
+//! This module is the bridge between [`FfiTypeDesc`](crate::ffi_type::FfiTypeDesc)
+//! (our parsed, platform-independent type descriptions) and
+//! [`libffi::middle::Type`] (the concrete ABI-level types that libffi uses to
+//! build call-interface descriptors).
+//!
+//! The key design insight is that the mapping is surprisingly flat:
+//!
+//! - **Scalars** (`UInt8`..`Float64`, `Handle`) map one-to-one to libffi primitives.
+//! - **`RustBuffer`** is the only pass-by-value struct. Its layout is
+//!   `{ u64, u64, pointer }` — a three-field `Type::structure`.
+//! - **Everything pointer-shaped** — `Reference`, `MutReference`, `Callback`,
+//!   `VoidPointer`, and `RustCallStatus` (always passed as `&mut`) — collapses
+//!   to a single `Type::pointer()` at the ABI level, regardless of what the
+//!   pointer points to.
+//! - **`ForeignBytes`** and bare **`Struct`** are intentionally unsupported:
+//!   they are parseable from JS for completeness but never appear in actual
+//!   UniFFI function signatures.
+
 use libffi::middle::Type;
 
 use crate::ffi_type::FfiTypeDesc;
 
-/// Maps an `FfiTypeDesc` to a `libffi::middle::Type`.
+/// Maps an [`FfiTypeDesc`] to a [`libffi::middle::Type`] suitable for CIF construction.
 ///
-/// Panics on unsupported types (`ForeignBytes`, bare `Struct`). These types
-/// are parseable from JS but have no direct CIF representation. `Struct` is
-/// always used via `Reference(Struct(...))` which maps to `Type::pointer()`.
+/// This is the single point of truth for how our abstract types become ABI types.
+///
+/// # Panics
+///
+/// Panics on `ForeignBytes` and bare `Struct(name)`, which are parseable from JS
+/// but have no direct CIF representation. `Struct` is always used via
+/// `Reference(Struct(...))`, which maps to `Type::pointer()`.
 pub fn ffi_type_for(desc: &FfiTypeDesc) -> Type {
     match desc {
         FfiTypeDesc::UInt8 => Type::u8(),
