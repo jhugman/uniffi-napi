@@ -20,8 +20,8 @@
 |------|---------------|
 | `fixtures/uniffi-fixture-simple/Cargo.toml` | UniFFI fixture crate manifest |
 | `fixtures/uniffi-fixture-simple/src/lib.rs` | Fixture Rust code: sync/async functions, traits, error types |
-| `lib/converters.mjs` | String lift/lower (UniFFI wire format: 4-byte BE length + UTF-8) |
-| `lib/async.mjs` | Async runtime: HandleMap, continuation callback, polling loop |
+| `tests/helpers/converters.mjs` | String lift/lower (UniFFI wire format: 4-byte BE length + UTF-8) |
+| `tests/helpers/async.mjs` | Async runtime: HandleMap, continuation callback, polling loop |
 | `tests/fixture.test.mjs` | Integration tests for all 10 test cases |
 
 ### Modified files
@@ -277,10 +277,10 @@ git commit -m "feat: add AsyncFetcher foreign trait to fixture"
 
 ---
 
-### Task 5: Create lib/converters.mjs
+### Task 5: Create tests/helpers/converters.mjs
 
 **Files:**
-- Create: `lib/converters.mjs`
+- Create: `tests/helpers/converters.mjs`
 
 - [ ] **Step 1: Write converters.mjs (ESM)**
 
@@ -336,16 +336,16 @@ export function liftArithmeticError(buf) {
 - [ ] **Step 2: Commit**
 
 ```bash
-git add lib/converters.mjs
+git add tests/helpers/converters.mjs
 git commit -m "feat: add UniFFI wire-format string converters"
 ```
 
 ---
 
-### Task 6: Create lib/async.mjs
+### Task 6: Create tests/helpers/async.mjs
 
 **Files:**
-- Create: `lib/async.mjs`
+- Create: `tests/helpers/async.mjs`
 
 - [ ] **Step 1: Write async.mjs (ESM)**
 
@@ -457,7 +457,7 @@ export {
 - [ ] **Step 2: Commit**
 
 ```bash
-git add lib/async.mjs
+git add tests/helpers/async.mjs
 git commit -m "feat: add async runtime for polling UniFFI Rust futures"
 ```
 
@@ -549,7 +549,7 @@ git commit -m "test: fixture sync scalar add(3,4)=7"
 
 Add at top of file:
 ```js
-import { lowerString, liftString, liftArithmeticError } from '../lib/converters.mjs';
+import { lowerString, liftString, liftArithmeticError } from './helpers/converters.mjs';
 ```
 
 Add test:
@@ -664,7 +664,7 @@ git commit -m "test: fixture sync divide — error and success paths"
 
 Add at top of file:
 ```js
-import { continuationCallback, uniffiRustCallAsync } from '../lib/async.mjs';
+import { continuationCallback, uniffiRustCallAsync } from './helpers/async.mjs';
 ```
 
 - [ ] **Step 2: Add async_add test**

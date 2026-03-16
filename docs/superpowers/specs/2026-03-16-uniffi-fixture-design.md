@@ -32,14 +32,14 @@ Three new components:
 
 ```
 fixtures/uniffi-fixture-simple/     ← UniFFI crate (proc macros)
-lib/async.js                        ← Async runtime (polling loop, handle map)
-lib/converters.js                   ← String lift/lower helpers
+tests/helpers/async.mjs                        ← Async runtime (polling loop, handle map)
+tests/helpers/converters.mjs                   ← String lift/lower helpers
 tests/fixture.test.mjs              ← Integration tests
 ```
 
 The fixture crate is a real UniFFI library. The JS side manually writes `register()` definitions that match UniFFI's generated scaffolding symbols — exactly what a code generator would emit.
 
-**`lib/async.js` and `lib/converters.js` are reusable runtime code**, not test helpers. They will live alongside `lib.js` and be imported by any generated binding. A code generator would `import { uniffiRustCallAsync } from 'uniffi-napi/lib/async.js'` and `import { liftString, lowerString } from 'uniffi-napi/lib/converters.js'`.
+**`tests/helpers/async.mjs` and `tests/helpers/converters.mjs` are test helpers** that prototype the runtime a code generator would emit. They live under `tests/` to make clear they are not production code yet. Once a real code generator exists, equivalent functionality will be promoted to a proper runtime package.
 
 **Crate naming:** The Cargo.toml uses `name = "uniffi-fixture-simple"` (hyphens). Cargo converts hyphens to underscores for the library name, producing `libuniffi_fixture_simple.dylib`. UniFFI uses the underscored form in all generated symbol names.
 
@@ -223,7 +223,7 @@ For callback interfaces, UniFFI generates a VTable init function and a VTable st
 
 ---
 
-## Component 2: Async Runtime (`lib/async.js`)
+## Component 2: Async Runtime (`tests/helpers/async.mjs`)
 
 A small module providing the polling loop for async Rust futures. Adapted from the React Native `async-rust-call.ts`.
 
@@ -311,7 +311,7 @@ export { HandleMap, continuationCallback, uniffiRustCallAsync, POLL_READY };
 
 ---
 
-## Component 3: Converters (`lib/converters.js`)
+## Component 3: Converters (`tests/helpers/converters.mjs`)
 
 Minimal serialization helpers for UniFFI's wire format. Only String for now.
 
