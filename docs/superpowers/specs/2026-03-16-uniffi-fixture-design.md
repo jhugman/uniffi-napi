@@ -63,9 +63,10 @@ crate-type = ["cdylib"]
 [dependencies]
 uniffi = { version = "0.31", features = ["cli"] }
 thiserror = "2"
+tokio = { version = "1", features = ["rt"] }
 ```
 
-**Note on async runtime:** UniFFI's scaffolding manages its own Tokio runtime for polling async functions — we do not need to depend on Tokio directly. If compilation reveals a runtime requirement, we will add it. The `async-trait` crate may also be unnecessary if UniFFI 0.31 handles async traits natively; this will be verified empirically.
+**Note on Tokio:** We depend on Tokio for `spawn_blocking` in `use_calculator_from_thread`. UniFFI's scaffolding also manages its own Tokio runtime for async function polling. The `async-trait` crate may be unnecessary if UniFFI 0.31 handles async traits natively; this will be verified empirically.
 
 ### src/lib.rs
 
@@ -152,12 +153,15 @@ pub fn use_calculator_strings(
     calc.concatenate(a, b)
 }
 
-/// Cross-thread callback: spawns a std::thread and calls calc.add() from it.
-/// Exercises the blocking cross-thread VTable dispatch path — the worker
-/// thread blocks until the JS main thread produces the answer via TSF.
+/// Cross-thread callback: runs calc.add() on a blocking thread via Tokio.
+/// Must be async — a sync fn would deadlock because .join() blocks the
+/// JS main thread, but the VTable callback needs the main thread to
+/// process via TSF. Making it async lets UniFFI's polling scaffolding
+/// yield the main thread between poll iterations.
 #[uniffi::export]
-pub fn use_calculator_from_thread(calc: Box<dyn Calculator>, a: u32, b: u32) -> u32 {
-    std::thread::spawn(move || calc.add(a, b)).join().unwrap()
+pub async fn use_calculator_from_thread(calc: Box<dyn Calculator>, a: u32, b: u32) -> u32 {
+    let handle = tokio::runtime::Handle::current();
+    handle.spawn_blocking(move || calc.add(a, b)).await.unwrap()
 }
 
 // ---------- Foreign trait: async callbacks (JS → Rust) ----------
