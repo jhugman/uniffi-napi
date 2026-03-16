@@ -57,3 +57,37 @@ test('fixture: add(3, 4) = 7 (sync scalar)', () => {
   assert.strictEqual(status.code, 0);
   assert.strictEqual(result, 7);
 });
+
+test('fixture: divide(1.0, 0.0) returns error (sync error path)', () => {
+  const nm = openAndRegister({
+    [`uniffi_${CRATE}_fn_func_divide`]: {
+      args: [FfiType.Float64, FfiType.Float64],
+      ret: FfiType.Float64,
+      hasRustCallStatus: true,
+    },
+  });
+
+  const status = { code: 0 };
+  nm[`uniffi_${CRATE}_fn_func_divide`](1.0, 0.0, status);
+  assert.notStrictEqual(status.code, 0, 'Expected non-zero error code');
+  assert.ok(status.errorBuf instanceof Uint8Array, 'Expected errorBuf');
+
+  const error = liftArithmeticError(status.errorBuf);
+  assert.strictEqual(error.variant, 1); // DivisionByZero
+  assert.ok(error.reason.includes('cannot divide by zero'));
+});
+
+test('fixture: divide(10.0, 2.0) = 5.0 (sync success path)', () => {
+  const nm = openAndRegister({
+    [`uniffi_${CRATE}_fn_func_divide`]: {
+      args: [FfiType.Float64, FfiType.Float64],
+      ret: FfiType.Float64,
+      hasRustCallStatus: true,
+    },
+  });
+
+  const status = { code: 0 };
+  const result = nm[`uniffi_${CRATE}_fn_func_divide`](10.0, 2.0, status);
+  assert.strictEqual(status.code, 0);
+  assert.strictEqual(result, 5.0);
+});
