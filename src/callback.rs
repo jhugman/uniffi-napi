@@ -116,6 +116,8 @@ pub enum RawCallbackArg {
     /// Buffer data copied out of a `RustBuffer` for cross-thread transport.
     /// The original `RustBuffer` is freed immediately after the copy.
     RustBuffer(Vec<u8>),
+    /// A raw C pointer (function pointer or opaque reference) transported as usize.
+    Pointer(usize),
 }
 
 /// Per-closure state passed to the libffi trampoline as the `userdata` pointer.
@@ -351,6 +353,14 @@ pub unsafe fn read_raw_arg(
 
             Some(RawCallbackArg::RustBuffer(data))
         }
+        FfiTypeDesc::Callback(_) => {
+            let fn_ptr = *(arg_ptr as *const *const c_void);
+            Some(RawCallbackArg::Pointer(fn_ptr as usize))
+        }
+        FfiTypeDesc::MutReference(_) | FfiTypeDesc::Reference(_) => {
+            let ptr = *(arg_ptr as *const *const c_void);
+            Some(RawCallbackArg::Pointer(ptr as usize))
+        }
         _ => None,
     }
 }
@@ -394,6 +404,7 @@ pub fn raw_arg_to_js(env: &Env, raw_arg: &RawCallbackArg) -> napi::Result<napi::
             // live `napi_value` just created above.
             Ok(unsafe { napi::JsUnknown::from_raw(raw_env, typedarray)? })
         }
+        RawCallbackArg::Pointer(v) => Ok(env.create_bigint_from_u64(*v as u64)?.into_unknown()?),
     }
 }
 
@@ -572,6 +583,14 @@ pub unsafe fn c_arg_to_js(
             // SAFETY: `raw_env` is valid (main thread) and `typedarray` is a
             // live napi_value just created above.
             Ok(napi::JsUnknown::from_raw(raw_env, typedarray)?)
+        }
+        FfiTypeDesc::Callback(_) => {
+            let fn_ptr = *(arg_ptr as *const *const c_void);
+            Ok(env.create_bigint_from_u64(fn_ptr as u64)?.into_unknown()?)
+        }
+        FfiTypeDesc::MutReference(_) | FfiTypeDesc::Reference(_) => {
+            let ptr = *(arg_ptr as *const *const c_void);
+            Ok(env.create_bigint_from_u64(ptr as u64)?.into_unknown()?)
         }
         _ => Err(napi::Error::from_reason(format!(
             "Unsupported callback arg type: {:?}",

@@ -63,6 +63,7 @@ use crate::callback::{
 use crate::cif::ffi_type_for;
 use crate::ffi_c_types::{ForeignBytesC, RustBufferC, RustBufferFromBytesFn, RustCallStatusC};
 use crate::ffi_type::FfiTypeDesc;
+use crate::fn_pointer;
 use crate::is_main_thread;
 use crate::napi_utils;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -181,6 +182,12 @@ pub struct VTableTrampolineUserdata {
     /// Pointer to the library's `rustbuffer_free` function, resolved via `dlsym`.
     /// Used to free `RustBuffer` arguments received from C before converting to JS.
     pub rb_free_ptr: *const c_void,
+    /// All callback definitions, needed for wrapping `Callback`-typed arguments
+    /// (C function pointers) as callable JS functions.
+    pub callback_defs: HashMap<String, CallbackDef>,
+    /// All struct definitions, needed for struct-by-value marshalling when
+    /// wrapping C function pointers.
+    pub struct_defs: HashMap<String, StructDef>,
 }
 
 // SAFETY: `raw_env` and `fn_ref` are only dereferenced on the main (JS) thread.
@@ -265,9 +272,30 @@ unsafe fn vtable_trampoline_main_thread(
         // SAFETY: libffi's CIF guarantees `args` has at least `declared_count`
         // entries, each pointing to a value whose type matches the CIF declaration.
         let arg_ptr = *args.add(i);
-        let js_val = match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) {
-            Ok(v) => v,
-            Err(_) => return,
+        let js_val = match desc {
+            FfiTypeDesc::Callback(cb_name) => {
+                // Wrap the C function pointer as a callable JS function.
+                let fn_ptr = *(arg_ptr as *const *const c_void);
+                let cb_def = match userdata.callback_defs.get(cb_name) {
+                    Some(d) => d,
+                    None => return,
+                };
+                match fn_pointer::create_fn_pointer_wrapper(
+                    &env,
+                    fn_ptr,
+                    cb_def,
+                    &userdata.struct_defs,
+                    userdata.rb_from_bytes_ptr,
+                    userdata.rb_free_ptr,
+                ) {
+                    Ok(f) => f.into_unknown(),
+                    Err(_) => return,
+                }
+            }
+            _ => match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) {
+                Ok(v) => v,
+                Err(_) => return,
+            },
         };
         js_args.push(js_val);
     }
@@ -964,14 +992,52 @@ fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: 
     };
 
     let mut js_args: Vec<napi::JsUnknown> = Vec::with_capacity(request.args.len() + 1);
-    for raw_arg in &request.args {
-        match raw_arg_to_js(env, raw_arg) {
-            Ok(v) => js_args.push(v),
-            Err(_) => {
-                send_default(&request);
-                return;
+    for (i, raw_arg) in request.args.iter().enumerate() {
+        // For Callback-typed args, the cross-thread path transported the raw pointer
+        // as RawCallbackArg::Pointer. We now wrap it as a callable JS function.
+        let js_val = if let Some(FfiTypeDesc::Callback(cb_name)) = userdata.arg_types.get(i) {
+            if let RawCallbackArg::Pointer(ptr_val) = raw_arg {
+                let fn_ptr = *ptr_val as *const c_void;
+                let cb_def = match userdata.callback_defs.get(cb_name) {
+                    Some(d) => d,
+                    None => {
+                        send_default(&request);
+                        return;
+                    }
+                };
+                match fn_pointer::create_fn_pointer_wrapper(
+                    env,
+                    fn_ptr,
+                    cb_def,
+                    &userdata.struct_defs,
+                    userdata.rb_from_bytes_ptr,
+                    userdata.rb_free_ptr,
+                ) {
+                    Ok(f) => f.into_unknown(),
+                    Err(_) => {
+                        send_default(&request);
+                        return;
+                    }
+                }
+            } else {
+                match raw_arg_to_js(env, raw_arg) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        send_default(&request);
+                        return;
+                    }
+                }
             }
-        }
+        } else {
+            match raw_arg_to_js(env, raw_arg) {
+                Ok(v) => v,
+                Err(_) => {
+                    send_default(&request);
+                    return;
+                }
+            }
+        };
+        js_args.push(js_val);
     }
 
     if userdata.has_rust_call_status {
@@ -1176,6 +1242,8 @@ pub fn build_vtable_struct(
                     tsfn: None, // Will be set below
                     rb_from_bytes_ptr,
                     rb_free_ptr,
+                    callback_defs: callback_defs.clone(),
+                    struct_defs: struct_defs.clone(),
                 });
 
                 // Leak userdata to a raw pointer for a stable address.
