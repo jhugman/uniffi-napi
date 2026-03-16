@@ -39,6 +39,10 @@ tests/fixture.test.mjs              ← Integration tests
 
 The fixture crate is a real UniFFI library. The JS side manually writes `register()` definitions that match UniFFI's generated scaffolding symbols — exactly what a code generator would emit.
 
+**`lib/async.js` and `lib/converters.js` are reusable runtime code**, not test helpers. They will live alongside `lib.js` and be imported by any generated binding. A code generator would `import { uniffiRustCallAsync } from 'uniffi-napi/lib/async.js'` and `import { liftString, lowerString } from 'uniffi-napi/lib/converters.js'`.
+
+**Crate naming:** The Cargo.toml uses `name = "uniffi-fixture-simple"` (hyphens). Cargo converts hyphens to underscores for the library name, producing `libuniffi_fixture_simple.dylib`. UniFFI uses the underscored form in all generated symbol names.
+
 ---
 
 ## Component 1: Fixture Crate
@@ -59,9 +63,9 @@ crate-type = ["cdylib"]
 [dependencies]
 uniffi = { version = "0.29", features = ["cli"] }
 thiserror = "2"
-async-trait = "0.1"
-tokio = { version = "1", features = ["rt", "time"] }
 ```
+
+**Note on async runtime:** UniFFI's scaffolding manages its own Tokio runtime for polling async functions — we do not need to depend on Tokio directly. If compilation reveals a runtime requirement, we will add it. The `async-trait` crate may also be unnecessary if UniFFI 0.29 handles async traits natively; this will be verified empirically.
 
 ### src/lib.rs
 
@@ -373,7 +377,109 @@ const SYMBOLS = {
 };
 ```
 
-The continuation callback is registered as a callback definition and referenced by the async poll functions.
+### Example: Complete register() for async_add
+
+This shows the full register() definitions needed for a single async function call, demonstrating all the moving parts. The exact symbol names will be verified via `nm -gU` after the first build and corrected as needed.
+
+```js
+const nm = lib.register({
+  symbols: SYMBOLS,
+  structs: {},
+  callbacks: {
+    // The continuation callback: (handle, pollResult) -> void
+    // Registered once, used by all async poll calls.
+    rust_future_continuation: {
+      args: [FfiType.UInt64, FfiType.Int8],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+  },
+  functions: {
+    // Initiate the async call — returns a future handle (u64)
+    [`uniffi_${CRATE}_fn_func_async_add`]: {
+      args: [FfiType.UInt32, FfiType.UInt32],
+      ret: FfiType.Handle,
+      hasRustCallStatus: true,
+    },
+    // Poll the future — takes (future_handle, continuation_callback, callback_data)
+    [`uniffi_${CRATE}_rust_future_poll_u32`]: {
+      args: [FfiType.Handle, FfiType.Callback('rust_future_continuation'), FfiType.UInt64],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+    // Extract result after POLL_READY
+    [`uniffi_${CRATE}_rust_future_complete_u32`]: {
+      args: [FfiType.Handle],
+      ret: FfiType.UInt32,
+      hasRustCallStatus: true,
+    },
+    // Free the future handle
+    [`uniffi_${CRATE}_rust_future_free_u32`]: {
+      args: [FfiType.Handle],
+      ret: FfiType.Void,
+      hasRustCallStatus: false,
+    },
+  },
+});
+```
+
+**Note on continuation callback registration:** UniFFI may use either a per-call approach (callback passed as an argument to `poll`) or a global `continuation_callback_set` function. The above assumes per-call. If UniFFI 0.29 uses the global approach, the continuation callback would be registered once via a `continuation_callback_set` function and the poll signature would change. We will verify this empirically.
+
+**Note on per-call callback leak:** If the continuation callback is passed per-poll-call as a `FfiType.Callback`, uniffi-napi creates and leaks a new libffi closure each time (by design — see `register.rs`). For short-lived futures that poll once, this is negligible. For long-polling futures, a global registration approach would be preferable. This is a known trade-off that a future optimization can address.
+
+### Example: Calculator VTable register() definitions
+
+At the FFI boundary, UniFFI passes trait objects as opaque `u64` handles. The `Box<dyn Calculator>` in Rust becomes `FfiType.Handle` in the register definitions.
+
+```js
+structs: {
+  // VTable struct — fields must match C struct order.
+  // UniFFI generates: each trait method + uniffi_free.
+  VTable_Calculator: [
+    { name: 'add', type: FfiType.Callback('callback_calculator_add') },
+    { name: 'concatenate', type: FfiType.Callback('callback_calculator_concatenate') },
+    { name: 'uniffi_free', type: FfiType.Callback('callback_calculator_free') },
+  ],
+},
+callbacks: {
+  callback_calculator_add: {
+    // (handle, a, b, &mut RustCallStatus) -> u32
+    args: [FfiType.UInt64, FfiType.UInt32, FfiType.UInt32],
+    ret: FfiType.UInt32,
+    hasRustCallStatus: true,
+  },
+  callback_calculator_concatenate: {
+    // (handle, a, b, &mut RustCallStatus) -> RustBuffer
+    args: [FfiType.UInt64, FfiType.RustBuffer, FfiType.RustBuffer],
+    ret: FfiType.RustBuffer,
+    hasRustCallStatus: true,
+  },
+  callback_calculator_free: {
+    args: [FfiType.UInt64],
+    ret: FfiType.Void,
+    hasRustCallStatus: true,
+  },
+},
+functions: {
+  [`uniffi_${CRATE}_fn_init_callback_vtable_calculator`]: {
+    args: [FfiType.Reference(FfiType.Struct('VTable_Calculator'))],
+    ret: FfiType.Void,
+    hasRustCallStatus: true,
+  },
+  [`uniffi_${CRATE}_fn_func_use_calculator`]: {
+    // Box<dyn Calculator> is passed as a Handle (u64) at the FFI boundary
+    args: [FfiType.Handle, FfiType.UInt32, FfiType.UInt32],
+    ret: FfiType.UInt32,
+    hasRustCallStatus: true,
+  },
+},
+```
+
+### AsyncFetcher VTable (async foreign trait)
+
+The `#[uniffi::export(with_foreign)]` async trait generates a more complex VTable. The exact protocol depends on the UniFFI version — the VTable method may return a `ForeignFuture` struct (handle + free function pointer) rather than the result directly. The `ForeignFuture` protocol allows Rust to poll the JS-owned async operation.
+
+**This is the most complex part of the design.** The exact VTable layout, return types, and polling protocol will be determined empirically after building the fixture. If the foreign future protocol proves incompatible with uniffi-napi's current struct/callback support, test #9 will be deferred to a follow-up that adds the necessary infrastructure.
 
 ---
 
