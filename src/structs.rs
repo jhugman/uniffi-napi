@@ -169,6 +169,11 @@ pub struct VTableTrampolineUserdata {
     pub ret_type: FfiTypeDesc,
     /// Whether the last C arg is a `&mut RustCallStatus`.
     pub has_rust_call_status: bool,
+    /// Whether the return value is passed via an out-pointer argument (UniFFI 0.31+
+    /// VTable convention). When true, the C function returns void and the return
+    /// value is written to an extra pointer arg that sits between the declared args
+    /// and the RustCallStatus pointer.
+    pub out_return: bool,
     tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
     /// Pointer to the library's `rustbuffer_from_bytes` function, resolved via `dlsym`.
     /// Used when the return type is `RustBuffer` to allocate a buffer from byte data.
@@ -267,18 +272,32 @@ unsafe fn vtable_trampoline_main_thread(
         js_args.push(js_val);
     }
 
+    // Track the next arg index after declared args.
+    // When out_return is true, args[next_idx] is the out-return pointer.
+    let mut next_idx = declared_count;
+
+    // Capture the out-return pointer if this callback uses the out-pointer convention.
+    let mut out_return_ptr: *mut c_void = std::ptr::null_mut();
+    if userdata.out_return {
+        // SAFETY: The CIF was built with an extra pointer arg at position `declared_count`.
+        let out_ret_arg_ptr = *args.add(next_idx);
+        // `out_ret_arg_ptr` is a pointer-to-pointer: libffi passes pointer args as
+        // pointers to the actual pointer value on the caller's stack.
+        out_return_ptr = *(out_ret_arg_ptr as *const *mut c_void);
+        next_idx += 1;
+    }
+
     // Extract the RustCallStatus pointer, if this callback uses one.
     //
     // The RustCallStatus is passed by the Rust caller as the final argument.
     // Because it is a *pointer* argument, libffi passes it as a pointer-to-pointer:
-    // `args[declared_count]` points to a `*mut RustCallStatus` on the caller's stack.
+    // `args[next_idx]` points to a `*mut RustCallStatus` on the caller's stack.
     // We dereference once to get the inner pointer, then cast to our minimal
     // `RustCallStatusForVTable` which accesses only the `code` field.
     let mut status_ptr: *mut RustCallStatusForVTable = std::ptr::null_mut();
     if userdata.has_rust_call_status {
-        // SAFETY: The CIF was built with `declared_count + 1` args (the extra one
-        // being the RustCallStatus pointer), so this index is in bounds.
-        let rcs_arg_ptr = *args.add(declared_count);
+        // SAFETY: The CIF was built with the RustCallStatus pointer at this index.
+        let rcs_arg_ptr = *args.add(next_idx);
         // SAFETY: `rcs_arg_ptr` points to a `*mut RustCallStatus`. Casting to
         // `*mut RustCallStatusForVTable` is layout-compatible because `code: i8`
         // is the first field of both structs.
@@ -320,13 +339,25 @@ unsafe fn vtable_trampoline_main_thread(
     }
 
     if let Ok(js_ret) = call_result {
-        write_return_value(
-            result,
-            &userdata.ret_type,
-            userdata.raw_env,
-            js_ret,
-            userdata.rb_from_bytes_ptr,
-        );
+        if userdata.out_return && !out_return_ptr.is_null() {
+            // Write the return value to the out-pointer at natural type width
+            // (no ffi_arg widening — the out-pointer is a concrete typed variable).
+            write_out_return_value(
+                out_return_ptr,
+                &userdata.ret_type,
+                userdata.raw_env,
+                js_ret,
+                userdata.rb_from_bytes_ptr,
+            );
+        } else {
+            write_return_value(
+                result,
+                &userdata.ret_type,
+                userdata.raw_env,
+                js_ret,
+                userdata.rb_from_bytes_ptr,
+            );
+        }
     }
 }
 
@@ -374,12 +405,24 @@ unsafe fn vtable_trampoline_cross_thread(
     let needs_blocking =
         !matches!(userdata.ret_type, FfiTypeDesc::Void) || userdata.has_rust_call_status;
 
+    // Track next arg index after declared args.
+    let mut next_idx = declared_count;
+
+    // Capture the out-return pointer if using the out-pointer convention.
+    let mut out_return_ptr: *mut c_void = std::ptr::null_mut();
+    if userdata.out_return {
+        // SAFETY: CIF includes an extra pointer arg at this index.
+        let out_ret_arg_ptr = *args.add(next_idx);
+        out_return_ptr = *(out_ret_arg_ptr as *const *mut c_void);
+        next_idx += 1;
+    }
+
     // Read RustCallStatus code if present (same pointer-to-pointer pattern as
     // the main-thread path — see the SAFETY comments there).
     let mut status_ptr: *mut RustCallStatusForVTable = std::ptr::null_mut();
     let rcs_code = if userdata.has_rust_call_status {
-        // SAFETY: CIF has `declared_count + 1` args; index is in bounds.
-        let rcs_arg_ptr = *args.add(declared_count);
+        // SAFETY: CIF has the RustCallStatus pointer at this index.
+        let rcs_arg_ptr = *args.add(next_idx);
         // SAFETY: pointer-to-pointer dereference; layout-compatible cast.
         status_ptr = *(rcs_arg_ptr as *const *mut RustCallStatusForVTable);
         if !status_ptr.is_null() {
@@ -408,12 +451,22 @@ unsafe fn vtable_trampoline_cross_thread(
         // Block until the JS thread processes the request and sends back the response.
         if let Ok(response) = rx.recv() {
             if let Some(ref raw_ret) = response.return_value {
-                write_raw_return_value(
-                    result,
-                    &userdata.ret_type,
-                    raw_ret,
-                    userdata.rb_from_bytes_ptr,
-                );
+                if userdata.out_return && !out_return_ptr.is_null() {
+                    // Write the return value to the out-pointer at natural type width.
+                    write_raw_out_return_value(
+                        out_return_ptr,
+                        &userdata.ret_type,
+                        raw_ret,
+                        userdata.rb_from_bytes_ptr,
+                    );
+                } else {
+                    write_raw_return_value(
+                        result,
+                        &userdata.ret_type,
+                        raw_ret,
+                        userdata.rb_from_bytes_ptr,
+                    );
+                }
             }
             if userdata.has_rust_call_status && !status_ptr.is_null() {
                 // SAFETY: `status_ptr` is non-null (checked above) and points
@@ -573,6 +626,201 @@ unsafe fn write_return_value(
         _ => {
             #[cfg(debug_assertions)]
             eprintln!("write_return_value: unsupported return type {:?}", ret_type);
+        }
+    }
+}
+
+/// Write a JS return value into an out-pointer (UniFFI 0.31+ VTable convention).
+///
+/// Unlike [`write_return_value`], this writes at the **natural type width** (no
+/// `ffi_arg`/`ffi_sarg` widening), because the out-pointer points to a concrete
+/// typed variable on the caller's stack (e.g. `u32`, not a libffi result buffer).
+///
+/// # Safety
+///
+/// - `out_ptr` must point to a valid, writable memory region of at least the
+///   size of the declared return type.
+/// - Must be called on the main JS thread (napi calls require it).
+unsafe fn write_out_return_value(
+    out_ptr: *mut c_void,
+    ret_type: &FfiTypeDesc,
+    raw_env: napi::sys::napi_env,
+    js_ret: napi::JsUnknown,
+    rb_from_bytes_ptr: *const c_void,
+) {
+    match ret_type {
+        FfiTypeDesc::Void => {}
+        FfiTypeDesc::Int8 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut i8) = v as i8;
+                }
+            }
+        }
+        FfiTypeDesc::UInt8 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut u8) = v as u8;
+                }
+            }
+        }
+        FfiTypeDesc::Int16 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut i16) = v as i16;
+                }
+            }
+        }
+        FfiTypeDesc::UInt16 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut u16) = v as u16;
+                }
+            }
+        }
+        FfiTypeDesc::Int32 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut i32) = v as i32;
+                }
+            }
+        }
+        FfiTypeDesc::UInt32 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut u32) = v as u32;
+                }
+            }
+        }
+        FfiTypeDesc::Int64 => {
+            if let Ok(bigint) = napi::JsBigInt::from_raw(raw_env, js_ret.raw()) {
+                if let Ok((v, _)) = bigint.get_i64() {
+                    *(out_ptr as *mut i64) = v;
+                }
+            }
+        }
+        FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => {
+            if let Ok(bigint) = napi::JsBigInt::from_raw(raw_env, js_ret.raw()) {
+                if let Ok((v, _)) = bigint.get_u64() {
+                    *(out_ptr as *mut u64) = v;
+                }
+            }
+        }
+        FfiTypeDesc::Float32 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut f32) = v as f32;
+                }
+            }
+        }
+        FfiTypeDesc::Float64 => {
+            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
+                if let Ok(v) = num.get_double() {
+                    *(out_ptr as *mut f64) = v;
+                }
+            }
+        }
+        FfiTypeDesc::RustBuffer => {
+            let (data, length) = match napi_utils::read_typedarray_data(raw_env, js_ret.raw()) {
+                Some(v) => v,
+                None => return,
+            };
+            if rb_from_bytes_ptr.is_null() || length > i32::MAX as usize {
+                return;
+            }
+            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
+            let foreign = ForeignBytesC {
+                len: length as i32,
+                data: if length > 0 { data } else { std::ptr::null() },
+            };
+            let mut call_status = RustCallStatusC::default();
+            let rb = from_bytes(foreign, &mut call_status as *mut _);
+            if call_status.code != 0 {
+                return;
+            }
+            *(out_ptr as *mut RustBufferC) = rb;
+        }
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!("write_out_return_value: unsupported return type {:?}", ret_type);
+        }
+    }
+}
+
+/// Write a [`RawCallbackArg`] return value into an out-pointer (cross-thread path,
+/// UniFFI 0.31+ VTable convention).
+///
+/// Unlike [`write_raw_return_value`], this writes at the natural type width.
+///
+/// # Safety
+///
+/// - `out_ptr` must point to a writable memory region of the declared return type's size.
+/// - `rb_from_bytes_ptr` (when non-null) must be a valid `RustBufferFromBytesFn`.
+unsafe fn write_raw_out_return_value(
+    out_ptr: *mut c_void,
+    ret_type: &FfiTypeDesc,
+    raw_ret: &RawCallbackArg,
+    rb_from_bytes_ptr: *const c_void,
+) {
+    match (ret_type, raw_ret) {
+        (FfiTypeDesc::Int8, RawCallbackArg::Int8(v)) => {
+            *(out_ptr as *mut i8) = *v;
+        }
+        (FfiTypeDesc::UInt8, RawCallbackArg::UInt8(v)) => {
+            *(out_ptr as *mut u8) = *v;
+        }
+        (FfiTypeDesc::Int16, RawCallbackArg::Int16(v)) => {
+            *(out_ptr as *mut i16) = *v;
+        }
+        (FfiTypeDesc::UInt16, RawCallbackArg::UInt16(v)) => {
+            *(out_ptr as *mut u16) = *v;
+        }
+        (FfiTypeDesc::Int32, RawCallbackArg::Int32(v)) => {
+            *(out_ptr as *mut i32) = *v;
+        }
+        (FfiTypeDesc::UInt32, RawCallbackArg::UInt32(v)) => {
+            *(out_ptr as *mut u32) = *v;
+        }
+        (FfiTypeDesc::Int64, RawCallbackArg::Int64(v)) => {
+            *(out_ptr as *mut i64) = *v;
+        }
+        (FfiTypeDesc::UInt64 | FfiTypeDesc::Handle, RawCallbackArg::UInt64(v)) => {
+            *(out_ptr as *mut u64) = *v;
+        }
+        (FfiTypeDesc::Float32, RawCallbackArg::Float32(v)) => {
+            *(out_ptr as *mut f32) = *v;
+        }
+        (FfiTypeDesc::Float64, RawCallbackArg::Float64(v)) => {
+            *(out_ptr as *mut f64) = *v;
+        }
+        (FfiTypeDesc::RustBuffer, RawCallbackArg::RustBuffer(data)) => {
+            if rb_from_bytes_ptr.is_null() {
+                return;
+            }
+            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
+            if data.len() > i32::MAX as usize {
+                return;
+            }
+            let foreign = ForeignBytesC {
+                len: data.len() as i32,
+                data: if data.is_empty() {
+                    std::ptr::null()
+                } else {
+                    data.as_ptr()
+                },
+            };
+            let mut call_status = RustCallStatusC::default();
+            let rb = from_bytes(foreign, &mut call_status as *mut _);
+            if call_status.code == 0 {
+                *(out_ptr as *mut RustBufferC) = rb;
+            }
+        }
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "write_raw_out_return_value: unsupported type pair {:?} / {:?}",
+                ret_type, raw_ret
+            );
         }
     }
 }
@@ -891,12 +1139,22 @@ pub fn build_vtable_struct(
                 }
 
                 // Build CIF for this callback:
-                // declared args + optional RustCallStatus pointer -> ret type
+                // declared args + optional out-return pointer + optional RustCallStatus pointer
                 let mut cif_arg_types: Vec<Type> = cb_def.args.iter().map(ffi_type_for).collect();
+                if cb_def.out_return {
+                    // Out-return pointer: an extra pointer arg before RustCallStatus
+                    cif_arg_types.push(Type::pointer());
+                }
                 if cb_def.has_rust_call_status {
                     cif_arg_types.push(Type::pointer());
                 }
-                let cif_ret_type = ffi_type_for(&cb_def.ret);
+                // When out_return is true, the C function returns void; the return
+                // value is written through the out-pointer instead.
+                let cif_ret_type = if cb_def.out_return {
+                    Type::void()
+                } else {
+                    ffi_type_for(&cb_def.ret)
+                };
                 let cif = Cif::new(cif_arg_types, cif_ret_type);
 
                 // Create userdata
@@ -906,6 +1164,7 @@ pub fn build_vtable_struct(
                     arg_types: cb_def.args.clone(),
                     ret_type: cb_def.ret.clone(),
                     has_rust_call_status: cb_def.has_rust_call_status,
+                    out_return: cb_def.out_return,
                     tsfn: None, // Will be set below
                     rb_from_bytes_ptr,
                     rb_free_ptr,

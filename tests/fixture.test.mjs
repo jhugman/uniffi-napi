@@ -136,6 +136,120 @@ test('fixture: async_add(3, 4) = 7 (async scalar)', async () => {
   assert.strictEqual(result, 7);
 });
 
+// Shared Calculator VTable registration definitions.
+//
+// The UniFFI 0.31 VTable struct for Calculator has this C layout:
+//   { uniffi_free, uniffi_clone, add, concatenate }
+// Each method callback uses the "out-return" convention: the return value is
+// written through an out-pointer argument, and the C function itself returns void.
+const CALCULATOR_CALLBACKS = {
+  callback_calculator_free: {
+    args: [FfiType.UInt64],
+    ret: FfiType.Void,
+    hasRustCallStatus: false,
+  },
+  callback_calculator_clone: {
+    args: [FfiType.UInt64],
+    ret: FfiType.UInt64,
+    hasRustCallStatus: false,
+  },
+  callback_calculator_add: {
+    args: [FfiType.UInt64, FfiType.UInt32, FfiType.UInt32],
+    ret: FfiType.UInt32,
+    hasRustCallStatus: true,
+    outReturn: true,
+  },
+  callback_calculator_concatenate: {
+    args: [FfiType.UInt64, FfiType.RustBuffer, FfiType.RustBuffer],
+    ret: FfiType.RustBuffer,
+    hasRustCallStatus: true,
+    outReturn: true,
+  },
+};
+
+const CALCULATOR_STRUCT = {
+  VTable_Calculator: [
+    { name: 'uniffi_free', type: FfiType.Callback('callback_calculator_free') },
+    { name: 'uniffi_clone', type: FfiType.Callback('callback_calculator_clone') },
+    { name: 'add', type: FfiType.Callback('callback_calculator_add') },
+    { name: 'concatenate', type: FfiType.Callback('callback_calculator_concatenate') },
+  ],
+};
+
+const CALCULATOR_VTABLE_JS = {
+  uniffi_free: (handle) => {},
+  uniffi_clone: (handle) => handle,
+  add: (handle, a, b, callStatus) => {
+    callStatus.code = 0;
+    return a + b;
+  },
+  concatenate: (handle, aBuf, bBuf, callStatus) => {
+    callStatus.code = 0;
+    return lowerString(liftString(aBuf) + liftString(bBuf));
+  },
+};
+
+test('fixture: Calculator.add via VTable (sync callback, scalar)', () => {
+  const nm = openAndRegister(
+    {
+      [`uniffi_${CRATE}_fn_init_callback_vtable_calculator`]: {
+        args: [FfiType.Reference(FfiType.Struct('VTable_Calculator'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+      [`uniffi_${CRATE}_fn_func_use_calculator`]: {
+        args: [FfiType.UInt64, FfiType.UInt32, FfiType.UInt32],
+        ret: FfiType.UInt32,
+        hasRustCallStatus: true,
+      },
+    },
+    CALCULATOR_CALLBACKS,
+    CALCULATOR_STRUCT,
+  );
+
+  // Register VTable
+  nm[`uniffi_${CRATE}_fn_init_callback_vtable_calculator`](CALCULATOR_VTABLE_JS);
+
+  // Call use_calculator(calc_handle, 3, 4) => should invoke add(3,4) => 7
+  const status2 = { code: 0 };
+  const result = nm[`uniffi_${CRATE}_fn_func_use_calculator`](1n, 3, 4, status2);
+  assert.strictEqual(status2.code, 0);
+  assert.strictEqual(result, 7);
+});
+
+test('fixture: Calculator.concatenate via VTable (sync callback, string)', () => {
+  const nm = openAndRegister(
+    {
+      [`uniffi_${CRATE}_fn_init_callback_vtable_calculator`]: {
+        args: [FfiType.Reference(FfiType.Struct('VTable_Calculator'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+      [`uniffi_${CRATE}_fn_func_use_calculator_strings`]: {
+        args: [FfiType.UInt64, FfiType.RustBuffer, FfiType.RustBuffer],
+        ret: FfiType.RustBuffer,
+        hasRustCallStatus: true,
+      },
+    },
+    CALCULATOR_CALLBACKS,
+    CALCULATOR_STRUCT,
+  );
+
+  // Register VTable
+  nm[`uniffi_${CRATE}_fn_init_callback_vtable_calculator`](CALCULATOR_VTABLE_JS);
+
+  // Call use_calculator_strings(calc_handle, "Hello, ", "World!") => "Hello, World!"
+  const status2 = { code: 0 };
+  const result = nm[`uniffi_${CRATE}_fn_func_use_calculator_strings`](
+    1n,
+    lowerString('Hello, '),
+    lowerString('World!'),
+    status2,
+  );
+  assert.strictEqual(status2.code, 0);
+  assert.strictEqual(liftString(result), 'Hello, World!');
+});
+
 test('fixture: async_greet("World") = "Hello, World!" (async string)', async () => {
   const nm = openAndRegister({
     [`uniffi_${CRATE}_fn_func_async_greet`]: {

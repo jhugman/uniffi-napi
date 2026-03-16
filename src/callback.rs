@@ -80,6 +80,11 @@ pub struct CallbackDef {
     /// Whether the callback signature includes a trailing `RustCallStatus`
     /// out-pointer, used by UniFFI's error-propagation convention.
     pub has_rust_call_status: bool,
+    /// Whether the return value is passed via an out-pointer argument rather
+    /// than the C return value. When true, the C function returns `void` and
+    /// the last argument before `RustCallStatus` is a pointer to the return
+    /// value buffer. This is the UniFFI 0.31+ convention for VTable callbacks.
+    pub out_return: bool,
 }
 
 /// A thread-safe snapshot of a single C argument value.

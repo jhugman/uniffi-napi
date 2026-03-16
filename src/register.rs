@@ -222,12 +222,18 @@ fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, 
         // Parse hasRustCallStatus
         let has_rust_call_status: bool = cb_def.get_named_property("hasRustCallStatus")?;
 
+        // Parse outReturn (optional, defaults to false)
+        let out_return: bool = cb_def
+            .get_named_property::<bool>("outReturn")
+            .unwrap_or(false);
+
         map.insert(
             name,
             CallbackDef {
                 args,
                 ret,
                 has_rust_call_status,
+                out_return,
             },
         );
     }
