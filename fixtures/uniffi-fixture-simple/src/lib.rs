@@ -26,3 +26,13 @@ pub fn divide(a: f64, b: f64) -> Result<f64, ArithmeticError> {
         Ok(a / b)
     }
 }
+
+#[uniffi::export]
+pub async fn async_add(a: u32, b: u32) -> u32 {
+    a + b
+}
+
+#[uniffi::export]
+pub async fn async_greet(name: String) -> String {
+    format!("Hello, {name}!")
+}
