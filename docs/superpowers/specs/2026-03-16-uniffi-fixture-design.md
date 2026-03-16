@@ -152,6 +152,14 @@ pub fn use_calculator_strings(
     calc.concatenate(a, b)
 }
 
+/// Cross-thread callback: spawns a std::thread and calls calc.add() from it.
+/// Exercises the blocking cross-thread VTable dispatch path — the worker
+/// thread blocks until the JS main thread produces the answer via TSF.
+#[uniffi::export]
+pub fn use_calculator_from_thread(calc: Box<dyn Calculator>, a: u32, b: u32) -> u32 {
+    std::thread::spawn(move || calc.add(a, b)).join().unwrap()
+}
+
 // ---------- Foreign trait: async callbacks (JS → Rust) ----------
 
 /// An async trait implemented in JS. When Rust calls fetch(),
@@ -184,6 +192,7 @@ UniFFI generates scaffolding symbols with predictable names. For crate `uniffi_f
 | `async fn async_greet(...)` | `uniffi_uniffi_fixture_simple_fn_func_async_greet` |
 | `fn use_calculator(...)` | `uniffi_uniffi_fixture_simple_fn_func_use_calculator` |
 | `fn use_calculator_strings(...)` | `uniffi_uniffi_fixture_simple_fn_func_use_calculator_strings` |
+| `fn use_calculator_from_thread(...)` | `uniffi_uniffi_fixture_simple_fn_func_use_calculator_from_thread` |
 | `fn use_async_fetcher(...)` | `uniffi_uniffi_fixture_simple_fn_func_use_async_fetcher` |
 | RustBuffer alloc | `uniffi_uniffi_fixture_simple_rustbuffer_alloc` |
 | RustBuffer free | `uniffi_uniffi_fixture_simple_rustbuffer_free` |
@@ -362,7 +371,8 @@ function liftArithmeticError(buf) {
 | 6 | `async_greet("World") → "Hello, World!"` | Rust ← JS | Async | String via polling loop |
 | 7 | Calculator.add(3, 4) → 7 | JS → Rust | Sync callback | u32 through VTable |
 | 8 | Calculator.concatenate("a", "b") → "ab" | JS → Rust | Sync callback | String through VTable |
-| 9 | AsyncFetcher.fetch("input") → result | JS → Rust | Async callback | String via foreign future |
+| 9 | Calculator.add from thread → 7 | JS → Rust | Sync callback (cross-thread) | Blocking VTable dispatch |
+| 10 | AsyncFetcher.fetch("input") → result | JS → Rust | Async callback | String via foreign future |
 
 ### Register Definitions
 
@@ -472,6 +482,13 @@ functions: {
     ret: FfiType.UInt32,
     hasRustCallStatus: true,
   },
+  [`uniffi_${CRATE}_fn_func_use_calculator_from_thread`]: {
+    // Same signature — but internally spawns a std::thread,
+    // exercising the blocking cross-thread VTable dispatch.
+    args: [FfiType.Handle, FfiType.UInt32, FfiType.UInt32],
+    ret: FfiType.UInt32,
+    hasRustCallStatus: true,
+  },
 },
 ```
 
@@ -516,16 +533,17 @@ UniFFI's internal symbol naming conventions are not part of its public API. The 
 
 The async callback path (test #9) requires understanding UniFFI's foreign future protocol — how Rust polls a JS-owned future. This is the most complex test and may require additional scaffolding symbols.
 
-**Mitigation:** Start with sync tests (1-8), get them passing, then tackle the async callback. If the foreign future protocol proves too complex for this initial fixture, defer test #9 to a follow-up.
+**Mitigation:** Start with sync tests (1-9), get them passing, then tackle the async callback. If the foreign future protocol proves too complex for this initial fixture, defer test #10 to a follow-up.
 
 ---
 
 ## Success Criteria
 
-All 9 tests pass, proving that uniffi-napi correctly:
+All 10 tests pass, proving that uniffi-napi correctly:
 - Calls real UniFFI-generated scaffolding functions
 - Marshals primitives (u32, f64) and strings (via RustBuffer) in both directions
 - Handles errors with serialized error buffers
 - Polls async Rust futures via continuation callbacks
-- Dispatches sync VTable callbacks (foreign trait methods)
+- Dispatches sync VTable callbacks on the main thread (foreign trait methods)
+- Dispatches sync VTable callbacks from a worker thread (blocking cross-thread)
 - Dispatches async VTable callbacks (foreign futures)
