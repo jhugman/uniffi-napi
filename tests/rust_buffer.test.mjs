@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import lib from '../lib.js';
 const { UniffiNativeModule, FfiType } = lib;
 
-const LIB_PATH = join(import.meta.dirname, '..', 'test_lib', 'target', 'debug',
+const LIB_PATH = join(import.meta.dirname, '..', 'fixtures', 'test_lib', 'target', 'debug',
   process.platform === 'darwin' ? 'libuniffi_napi_test_lib.dylib' : 'libuniffi_napi_test_lib.so'
 );
 
