@@ -35,6 +35,7 @@ use std::ffi::c_void;
 use std::rc::Rc;
 
 use libffi::middle::{arg, Arg, Cif, CodePtr, Type};
+use libffi::raw::ffi_abi_FFI_DEFAULT_ABI;
 use napi::{Env, JsFunction, JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::callback::CallbackDef;
@@ -44,6 +45,30 @@ use crate::ffi_type::FfiTypeDesc;
 use crate::marshal;
 use crate::napi_utils;
 use crate::structs::StructDef;
+
+/// Force libffi to compute size and alignment for a struct type (and any nested structs).
+///
+/// `Type::structure()` creates `ffi_type` with `size=0, alignment=0`. These fields
+/// are only populated when `ffi_prep_cif` walks the type tree. This function creates
+/// a minimal dummy CIF with the struct as a parameter type, which triggers the
+/// in-place initialization of the struct's `ffi_type` and all nested struct types.
+fn prep_struct_type(struct_type: &Type) {
+    unsafe {
+        let raw = struct_type.as_raw_ptr();
+        // Build a minimal arg types array: [struct_type_ptr, null]
+        let mut arg_types: [*mut libffi::low::ffi_type; 2] = [raw, std::ptr::null_mut()];
+        let mut cif: libffi::low::ffi_cif = std::mem::zeroed();
+        // We don't care about the result; we just need prep_cif to walk the struct type
+        // tree and populate size/alignment fields.
+        let _ = libffi::raw::ffi_prep_cif(
+            &mut cif as *mut _,
+            ffi_abi_FFI_DEFAULT_ABI,
+            1,
+            &raw mut libffi::low::types::void as *mut _,
+            arg_types.as_mut_ptr(),
+        );
+    }
+}
 
 /// Compute field offsets for a libffi struct type.
 ///
@@ -100,6 +125,12 @@ pub fn marshal_js_struct_to_bytes(
         .map(|f| ffi_type_for(&f.field_type, struct_defs))
         .collect();
     let struct_type = Type::structure(field_ffi_types);
+
+    // Force libffi to compute size/alignment for this struct (and any nested structs).
+    // Type::structure() initializes size=0 and alignment=0; these only get populated
+    // when ffi_prep_cif walks the type tree. We call prep_cif directly on the raw
+    // pointer so it mutates the struct_type in place.
+    prep_struct_type(&struct_type);
 
     // 2. Allocate a Vec<u8> of the struct's total size
     let total_size = ffi_type_size(&struct_type);
