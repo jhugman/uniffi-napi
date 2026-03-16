@@ -250,6 +250,64 @@ test('fixture: Calculator.concatenate via VTable (sync callback, string)', () =>
   assert.strictEqual(liftString(result), 'Hello, World!');
 });
 
+test('fixture: Calculator.add from background thread (async + cross-thread VTable)', async () => {
+  const nm = openAndRegister(
+    {
+      [`uniffi_${CRATE}_fn_init_callback_vtable_calculator`]: {
+        args: [FfiType.Reference(FfiType.Struct('VTable_Calculator'))],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+      [`uniffi_${CRATE}_fn_func_use_calculator_from_thread`]: {
+        args: [FfiType.UInt64, FfiType.UInt32, FfiType.UInt32],
+        ret: FfiType.Handle,
+        hasRustCallStatus: true,
+      },
+      [`ffi_${CRATE}_rust_future_poll_u32`]: {
+        args: [FfiType.Handle, FfiType.Callback('rust_future_continuation'), FfiType.UInt64],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+      [`ffi_${CRATE}_rust_future_complete_u32`]: {
+        args: [FfiType.Handle],
+        ret: FfiType.UInt32,
+        hasRustCallStatus: true,
+      },
+      [`ffi_${CRATE}_rust_future_free_u32`]: {
+        args: [FfiType.Handle],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+    },
+    {
+      ...CALCULATOR_CALLBACKS,
+      rust_future_continuation: {
+        args: [FfiType.UInt64, FfiType.Int8],
+        ret: FfiType.Void,
+        hasRustCallStatus: false,
+      },
+    },
+    CALCULATOR_STRUCT,
+  );
+
+  // Register the Calculator VTable so Rust can call back into JS
+  nm[`uniffi_${CRATE}_fn_init_callback_vtable_calculator`](CALCULATOR_VTABLE_JS);
+
+  // Call use_calculator_from_thread(calc_handle, 3, 4) — async, spawns a blocking
+  // thread that invokes calc.add() via the VTable, dispatched back to JS via TSF.
+  const result = await uniffiRustCallAsync(nm, {
+    rustFutureFunc: () => {
+      const status = { code: 0 };
+      return nm[`uniffi_${CRATE}_fn_func_use_calculator_from_thread`](1n, 3, 4, status);
+    },
+    pollFunc: `ffi_${CRATE}_rust_future_poll_u32`,
+    completeFunc: `ffi_${CRATE}_rust_future_complete_u32`,
+    freeFunc: `ffi_${CRATE}_rust_future_free_u32`,
+  });
+
+  assert.strictEqual(result, 7);
+});
+
 test('fixture: async_greet("World") = "Hello, World!" (async string)', async () => {
   const nm = openAndRegister({
     [`uniffi_${CRATE}_fn_func_async_greet`]: {

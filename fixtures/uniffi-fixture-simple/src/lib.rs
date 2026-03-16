@@ -59,8 +59,12 @@ pub fn use_calculator_strings(
 
 #[uniffi::export]
 pub async fn use_calculator_from_thread(calc: Box<dyn Calculator>, a: u32, b: u32) -> u32 {
-    let handle = tokio::runtime::Handle::current();
-    handle.spawn_blocking(move || calc.add(a, b)).await.unwrap()
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let result = calc.add(a, b);
+        let _ = tx.send(result);
+    });
+    rx.await.unwrap()
 }
 
 #[uniffi::export(with_foreign)]
