@@ -61,7 +61,7 @@ use crate::callback::{
     c_arg_to_js, js_return_to_raw, raw_arg_to_js, read_raw_arg, CallbackDef, RawCallbackArg,
 };
 use crate::cif::ffi_type_for;
-use crate::ffi_c_types::{ForeignBytesC, RustBufferC, RustBufferFromBytesFn, RustCallStatusC};
+use crate::ffi_c_types::RustBufferC;
 use crate::ffi_type::FfiTypeDesc;
 use crate::fn_pointer;
 use crate::is_main_thread;
@@ -223,6 +223,21 @@ pub unsafe extern "C" fn vtable_trampoline_callback(
     args: *const *const c_void,
     userdata: &VTableTrampolineUserdata,
 ) {
+    // Zero-initialize the result buffer so that early returns (from error paths
+    // in the main-thread or cross-thread trampolines) produce a deterministic
+    // zero value rather than leaving uninitialized memory that the Rust caller
+    // would interpret as a return value. On 64-bit platforms `ffi_arg` is 8 bytes,
+    // which covers all scalar types and RustBufferC (24 bytes fits within the
+    // libffi result buffer, which is always at least `sizeof(ffi_arg)` bytes,
+    // but for RustBuffer the CIF declares a struct return so libffi allocates
+    // enough space). We conservatively zero 8 bytes (sufficient for all scalar
+    // returns); struct returns (RustBuffer) are always explicitly written.
+    std::ptr::write_bytes(
+        result as *mut c_void as *mut u8,
+        0,
+        std::mem::size_of::<u64>(),
+    );
+
     if !is_main_thread() {
         // Cross-thread path: serialize args, dispatch to JS thread, wait for result
         vtable_trampoline_cross_thread(result, args, userdata);
@@ -622,34 +637,16 @@ unsafe fn write_return_value(
             }
         }
         FfiTypeDesc::RustBuffer => {
-            // Extract Uint8Array data from the JS return value.
             let (data, length) = match napi_utils::read_typedarray_data(raw_env, js_ret.raw()) {
                 Some(v) => v,
-                None => return, // Not a typed array — silently fail like other arms
+                None => return,
             };
-
-            // Create ForeignBytes and call rustbuffer_from_bytes to allocate a
-            // Rust-owned buffer. This is a pure C call, safe from any thread.
-            if rb_from_bytes_ptr.is_null() || length > i32::MAX as usize {
+            if rb_from_bytes_ptr.is_null() {
                 return;
             }
-            // SAFETY: `rb_from_bytes_ptr` was resolved via `dlsym` from the loaded
-            // UniFFI library and has the `RustBufferFromBytesFn` signature. The
-            // transmute is safe because the pointer targets a function with exactly
-            // this calling convention and parameter types.
-            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
-            let foreign = ForeignBytesC {
-                len: length as i32,
-                data: if length > 0 { data } else { std::ptr::null() },
-            };
-            let mut call_status = RustCallStatusC::default();
-            let rb = from_bytes(foreign, &mut call_status as *mut _);
-            if call_status.code != 0 {
-                return;
+            if let Ok(rb) = napi_utils::rustbuffer_from_raw_bytes(data, length, rb_from_bytes_ptr) {
+                *(result_ptr as *mut RustBufferC) = rb;
             }
-
-            // Write RustBufferC to result buffer (natural width, no widening needed).
-            *(result_ptr as *mut RustBufferC) = rb;
         }
         _ => {
             #[cfg(debug_assertions)]
@@ -753,20 +750,12 @@ unsafe fn write_out_return_value(
                 Some(v) => v,
                 None => return,
             };
-            if rb_from_bytes_ptr.is_null() || length > i32::MAX as usize {
+            if rb_from_bytes_ptr.is_null() {
                 return;
             }
-            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
-            let foreign = ForeignBytesC {
-                len: length as i32,
-                data: if length > 0 { data } else { std::ptr::null() },
-            };
-            let mut call_status = RustCallStatusC::default();
-            let rb = from_bytes(foreign, &mut call_status as *mut _);
-            if call_status.code != 0 {
-                return;
+            if let Ok(rb) = napi_utils::rustbuffer_from_raw_bytes(data, length, rb_from_bytes_ptr) {
+                *(out_ptr as *mut RustBufferC) = rb;
             }
-            *(out_ptr as *mut RustBufferC) = rb;
         }
         _ => {
             #[cfg(debug_assertions)]
@@ -828,21 +817,9 @@ unsafe fn write_raw_out_return_value(
             if rb_from_bytes_ptr.is_null() {
                 return;
             }
-            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
-            if data.len() > i32::MAX as usize {
-                return;
-            }
-            let foreign = ForeignBytesC {
-                len: data.len() as i32,
-                data: if data.is_empty() {
-                    std::ptr::null()
-                } else {
-                    data.as_ptr()
-                },
-            };
-            let mut call_status = RustCallStatusC::default();
-            let rb = from_bytes(foreign, &mut call_status as *mut _);
-            if call_status.code == 0 {
+            if let Ok(rb) =
+                napi_utils::rustbuffer_from_raw_bytes(data.as_ptr(), data.len(), rb_from_bytes_ptr)
+            {
                 *(out_ptr as *mut RustBufferC) = rb;
             }
         }
@@ -914,25 +891,9 @@ unsafe fn write_raw_return_value(
             if rb_from_bytes_ptr.is_null() {
                 return;
             }
-
-            // SAFETY: `rb_from_bytes_ptr` was resolved via `dlsym` and has the
-            // `RustBufferFromBytesFn` signature. `rustbuffer_from_bytes` is a pure
-            // C function with no thread-affinity requirements, safe to call here.
-            let from_bytes: RustBufferFromBytesFn = std::mem::transmute(rb_from_bytes_ptr);
-            if data.len() > i32::MAX as usize {
-                return;
-            }
-            let foreign = ForeignBytesC {
-                len: data.len() as i32,
-                data: if data.is_empty() {
-                    std::ptr::null()
-                } else {
-                    data.as_ptr()
-                },
-            };
-            let mut call_status = RustCallStatusC::default();
-            let rb = from_bytes(foreign, &mut call_status as *mut _);
-            if call_status.code == 0 {
+            if let Ok(rb) =
+                napi_utils::rustbuffer_from_raw_bytes(data.as_ptr(), data.len(), rb_from_bytes_ptr)
+            {
                 *(result_ptr as *mut RustBufferC) = rb;
             }
         }

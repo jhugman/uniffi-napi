@@ -413,7 +413,7 @@ test('fixture: async_greet("World") = "Hello, World!" (async string)', async () 
   assert.strictEqual(result, "Hello, World!");
 });
 
-test('fixture: register with struct-by-value does not crash', () => {
+test("fixture: register with struct-by-value does not crash", () => {
   const mod = UniffiNativeModule.open(LIB_PATH);
   assert.doesNotThrow(() => {
     mod.register({
@@ -421,26 +421,26 @@ test('fixture: register with struct-by-value does not crash', () => {
       functions: {},
       callbacks: {
         test_cb: {
-          args: [FfiType.Struct('TestResult')],
+          args: [FfiType.Struct("TestResult")],
           ret: FfiType.Void,
           hasRustCallStatus: false,
         },
       },
       structs: {
         TestResult: [
-          { name: 'value', type: FfiType.UInt32 },
-          { name: 'code', type: FfiType.Int8 },
+          { name: "value", type: FfiType.UInt32 },
+          { name: "code", type: FfiType.Int8 },
         ],
       },
     });
   });
 });
 
-test('fixture: AsyncFetcher.fetch (async foreign trait)', async () => {
+test("fixture: AsyncFetcher.fetch (async foreign trait)", async () => {
   const nm = openAndRegister(
     {
       [`uniffi_${CRATE}_fn_init_callback_vtable_asyncfetcher`]: {
-        args: [FfiType.Reference(FfiType.Struct('VTable_AsyncFetcher'))],
+        args: [FfiType.Reference(FfiType.Struct("VTable_AsyncFetcher"))],
         ret: FfiType.Void,
         hasRustCallStatus: false,
       },
@@ -450,7 +450,11 @@ test('fixture: AsyncFetcher.fetch (async foreign trait)', async () => {
         hasRustCallStatus: true,
       },
       [`ffi_${CRATE}_rust_future_poll_rust_buffer`]: {
-        args: [FfiType.Handle, FfiType.Callback('rust_future_continuation'), FfiType.UInt64],
+        args: [
+          FfiType.Handle,
+          FfiType.Callback("rust_future_continuation"),
+          FfiType.UInt64,
+        ],
         ret: FfiType.Void,
         hasRustCallStatus: false,
       },
@@ -485,15 +489,17 @@ test('fixture: AsyncFetcher.fetch (async foreign trait)', async () => {
         args: [
           FfiType.UInt64,
           FfiType.RustBuffer,
-          FfiType.Callback('ForeignFutureCompleteRustBuffer'),
+          FfiType.Callback("ForeignFutureCompleteRustBuffer"),
           FfiType.UInt64,
-          FfiType.MutReference(FfiType.Struct('ForeignFutureDroppedCallbackStruct')),
+          FfiType.MutReference(
+            FfiType.Struct("ForeignFutureDroppedCallbackStruct"),
+          ),
         ],
         ret: FfiType.Void,
         hasRustCallStatus: false,
       },
       ForeignFutureCompleteRustBuffer: {
-        args: [FfiType.UInt64, FfiType.Struct('ForeignFutureResultRustBuffer')],
+        args: [FfiType.UInt64, FfiType.Struct("ForeignFutureResultRustBuffer")],
         ret: FfiType.Void,
         hasRustCallStatus: false,
       },
@@ -505,21 +511,33 @@ test('fixture: AsyncFetcher.fetch (async foreign trait)', async () => {
     },
     {
       VTable_AsyncFetcher: [
-        { name: 'uniffi_free', type: FfiType.Callback('callback_asyncfetcher_free') },
-        { name: 'uniffi_clone', type: FfiType.Callback('callback_asyncfetcher_clone') },
-        { name: 'fetch', type: FfiType.Callback('callback_asyncfetcher_fetch') },
+        {
+          name: "uniffi_free",
+          type: FfiType.Callback("callback_asyncfetcher_free"),
+        },
+        {
+          name: "uniffi_clone",
+          type: FfiType.Callback("callback_asyncfetcher_clone"),
+        },
+        {
+          name: "fetch",
+          type: FfiType.Callback("callback_asyncfetcher_fetch"),
+        },
       ],
       ForeignFutureResultRustBuffer: [
-        { name: 'returnValue', type: FfiType.RustBuffer },
-        { name: 'callStatus', type: FfiType.Struct('RustCallStatus') },
+        { name: "returnValue", type: FfiType.RustBuffer },
+        { name: "callStatus", type: FfiType.Struct("RustCallStatus") },
       ],
       RustCallStatus: [
-        { name: 'code', type: FfiType.Int8 },
-        { name: 'errorBuf', type: FfiType.RustBuffer },
+        { name: "code", type: FfiType.Int8 },
+        { name: "errorBuf", type: FfiType.RustBuffer },
       ],
       ForeignFutureDroppedCallbackStruct: [
-        { name: 'callbackData', type: FfiType.UInt64 },
-        { name: 'callback', type: FfiType.Callback('ForeignFutureDroppedCallback') },
+        { name: "callbackData", type: FfiType.UInt64 },
+        {
+          name: "callback",
+          type: FfiType.Callback("ForeignFutureDroppedCallback"),
+        },
       ],
     },
   );
@@ -534,13 +552,10 @@ test('fixture: AsyncFetcher.fetch (async foreign trait)', async () => {
       const result = `fetched: ${input}`;
 
       // Call the completion callback with the result
-      completeCb(
-        completeCbData,
-        {
-          returnValue: lowerString(result),
-          callStatus: { code: 0, errorBuf: new Uint8Array(0) },
-        }
-      );
+      completeCb(completeCbData, {
+        returnValue: lowerString(result),
+        callStatus: { code: 0, errorBuf: new Uint8Array(0) },
+      });
     },
   });
 
@@ -548,7 +563,11 @@ test('fixture: AsyncFetcher.fetch (async foreign trait)', async () => {
   const result = await uniffiRustCallAsync(nm, {
     rustFutureFunc: () => {
       const status = { code: 0 };
-      return nm[`uniffi_${CRATE}_fn_func_use_async_fetcher`](1n, lowerString('hello'), status);
+      return nm[`uniffi_${CRATE}_fn_func_use_async_fetcher`](
+        1n,
+        lowerString("hello"),
+        status,
+      );
     },
     pollFunc: `ffi_${CRATE}_rust_future_poll_rust_buffer`,
     completeFunc: `ffi_${CRATE}_rust_future_complete_rust_buffer`,
@@ -556,5 +575,5 @@ test('fixture: AsyncFetcher.fetch (async foreign trait)', async () => {
     liftFunc: liftString,
   });
 
-  assert.strictEqual(result, 'fetched: hello');
+  assert.strictEqual(result, "fetched: hello");
 });

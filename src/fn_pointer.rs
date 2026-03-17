@@ -40,7 +40,7 @@ use napi::{Env, JsFunction, JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::callback::CallbackDef;
 use crate::cif::ffi_type_for;
-use crate::ffi_c_types::{ForeignBytesC, RustBufferC, RustBufferFromBytesFn, RustCallStatusC};
+use crate::ffi_c_types::RustBufferC;
 use crate::ffi_type::FfiTypeDesc;
 use crate::marshal;
 use crate::napi_utils;
@@ -176,14 +176,12 @@ pub fn marshal_js_struct_to_bytes(
                 buffer[offset..offset + 4].copy_from_slice(&v.to_ne_bytes());
             }
             FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => {
-                let bigint =
-                    unsafe { napi::JsBigInt::from_raw(env.raw(), js_val.raw())? };
+                let bigint = unsafe { napi::JsBigInt::from_raw(env.raw(), js_val.raw())? };
                 let (v, _) = bigint.get_u64()?;
                 buffer[offset..offset + 8].copy_from_slice(&v.to_ne_bytes());
             }
             FfiTypeDesc::Int64 => {
-                let bigint =
-                    unsafe { napi::JsBigInt::from_raw(env.raw(), js_val.raw())? };
+                let bigint = unsafe { napi::JsBigInt::from_raw(env.raw(), js_val.raw())? };
                 let (v, _) = bigint.get_i64()?;
                 buffer[offset..offset + 8].copy_from_slice(&v.to_ne_bytes());
             }
@@ -199,7 +197,9 @@ pub fn marshal_js_struct_to_bytes(
             }
             FfiTypeDesc::RustBuffer => {
                 // Convert JS Uint8Array -> RustBufferC via rustbuffer_from_bytes
-                let rb = js_uint8array_to_rust_buffer_inline(env, js_val, rb_from_bytes_ptr)?;
+                let rb = unsafe {
+                    napi_utils::js_uint8array_to_rust_buffer(env.raw(), js_val, rb_from_bytes_ptr)?
+                };
                 // RustBufferC is { capacity: u64, len: u64, data: *mut u8 } = 24 bytes
                 let rb_bytes: [u8; std::mem::size_of::<RustBufferC>()] =
                     unsafe { std::mem::transmute(rb) };
@@ -209,9 +209,7 @@ pub fn marshal_js_struct_to_bytes(
                 // Recursively marshal nested struct
                 let nested_obj: JsObject = js_val.try_into()?;
                 let nested_def = struct_defs.get(name).ok_or_else(|| {
-                    napi::Error::from_reason(format!(
-                        "Unknown nested struct type: '{name}'"
-                    ))
+                    napi::Error::from_reason(format!("Unknown nested struct type: '{name}'"))
                 })?;
                 let nested_bytes = marshal_js_struct_to_bytes(
                     env,
@@ -232,47 +230,6 @@ pub fn marshal_js_struct_to_bytes(
     }
 
     Ok(buffer)
-}
-
-/// Convert a JS `Uint8Array` to a `RustBufferC` by copying the bytes through `rustbuffer_from_bytes`.
-///
-/// This is the same logic as `register.rs::js_uint8array_to_rust_buffer` but takes
-/// a `JsUnknown` directly rather than requiring the caller to have a specific typed value.
-fn js_uint8array_to_rust_buffer_inline(
-    env: &Env,
-    js_val: JsUnknown,
-    rb_from_bytes_ptr: *const c_void,
-) -> Result<RustBufferC> {
-    let (data_ptr, length) = unsafe { napi_utils::read_typedarray_data(env.raw(), js_val.raw()) }
-        .ok_or_else(|| {
-            napi::Error::from_reason("Expected a Uint8Array argument for RustBuffer".to_string())
-        })?;
-
-    if length > i32::MAX as usize {
-        return Err(napi::Error::from_reason(
-            "RustBuffer too large for ForeignBytes (max 2GB)".to_string(),
-        ));
-    }
-    let foreign = ForeignBytesC {
-        len: length as i32,
-        data: if length > 0 {
-            data_ptr
-        } else {
-            std::ptr::null()
-        },
-    };
-
-    let mut call_status = RustCallStatusC::default();
-    let from_bytes: RustBufferFromBytesFn = unsafe { std::mem::transmute(rb_from_bytes_ptr) };
-    let rb = unsafe { from_bytes(foreign, &mut call_status as *mut RustCallStatusC) };
-
-    if call_status.code != 0 {
-        return Err(napi::Error::from_reason(
-            "rustbuffer_from_bytes failed".to_string(),
-        ));
-    }
-
-    Ok(rb)
 }
 
 /// Wrap a C function pointer as a callable JS function.
@@ -348,8 +305,13 @@ pub fn create_fn_pointer_wrapper(
                     struct_buffers.push(buf);
                 }
                 FfiTypeDesc::RustBuffer => {
-                    let rb =
-                        js_uint8array_to_rust_buffer_inline(ctx.env, js_val, rb_from_bytes_ptr)?;
+                    let rb = unsafe {
+                        napi_utils::js_uint8array_to_rust_buffer(
+                            ctx.env.raw(),
+                            js_val,
+                            rb_from_bytes_ptr,
+                        )?
+                    };
                     rb_values.push(rb);
                 }
                 _ => {
@@ -372,9 +334,7 @@ pub fn create_fn_pointer_wrapper(
                     // SAFETY: buf.as_ptr() points to a valid byte buffer that will remain
                     // alive for the duration of the cif.call() below. libffi reads the
                     // struct data through this pointer.
-                    ffi_args.push(unsafe {
-                        Arg::new(&*(buf.as_ptr() as *const c_void))
-                    });
+                    ffi_args.push(unsafe { Arg::new(&*(buf.as_ptr() as *const c_void)) });
                     struct_idx += 1;
                 }
                 FfiTypeDesc::RustBuffer => {
@@ -397,12 +357,10 @@ pub fn create_fn_pointer_wrapper(
                 unsafe { cif.call::<()>(code_ptr, &ffi_args) };
                 ctx.env.get_undefined().map(|v| v.into_unknown())
             }
-            _ => {
-                Err(napi::Error::from_reason(format!(
-                    "Non-void return types for fn_pointer_wrapper not yet supported: {:?}",
-                    ret_type
-                )))
-            }
+            _ => Err(napi::Error::from_reason(format!(
+                "Non-void return types for fn_pointer_wrapper not yet supported: {:?}",
+                ret_type
+            ))),
         }
     })?;
 

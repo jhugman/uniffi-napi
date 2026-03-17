@@ -56,7 +56,7 @@ use napi::{JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::callback::{self, raw_arg_to_js, CallbackDef, RawCallbackArg, TrampolineUserdata};
 use crate::cif::ffi_type_for;
-use crate::ffi_c_types::{ForeignBytesC, RustBufferC, RustBufferFromBytesFn, RustCallStatusC};
+use crate::ffi_c_types::{RustBufferC, RustCallStatusC};
 use crate::ffi_type::FfiTypeDesc;
 use crate::library::LibraryHandle;
 use crate::marshal;
@@ -278,7 +278,9 @@ fn call_ffi_function(
         match desc {
             FfiTypeDesc::RustBuffer => {
                 // Convert Uint8Array -> RustBufferC via rustbuffer_from_bytes
-                let rust_buffer = js_uint8array_to_rust_buffer(env, js_val, rb_from_bytes_ptr)?;
+                let rust_buffer = unsafe {
+                    napi_utils::js_uint8array_to_rust_buffer(env.raw(), js_val, rb_from_bytes_ptr)?
+                };
                 boxed_args.push(Box::new(rust_buffer));
             }
             FfiTypeDesc::Reference(inner) if matches!(inner.as_ref(), FfiTypeDesc::Struct(_)) => {
@@ -571,58 +573,6 @@ fn call_with_ret_type(
             ))),
         }
     }
-}
-
-/// Convert a JS `Uint8Array` to a `RustBufferC` by copying the bytes through `rustbuffer_from_bytes`.
-///
-/// The flow is: read the typed-array's data pointer and length from the JS value,
-/// wrap them in a `ForeignBytesC` (which borrows the JS buffer), then call the
-/// library's `rustbuffer_from_bytes` to allocate a new Rust-owned copy.
-fn js_uint8array_to_rust_buffer(
-    env: &Env,
-    js_val: JsUnknown,
-    rb_from_bytes_ptr: *const c_void,
-) -> Result<RustBufferC> {
-    // SAFETY: `read_typedarray_data` calls `napi_get_typedarray_info` with the raw env
-    // and value handles from the current call context. Both are valid for the duration
-    // of this synchronous function. The returned `data_ptr` borrows the JS ArrayBuffer's
-    // backing store, which is kept alive by the GC while we hold the `js_val` reference.
-    let (data_ptr, length) = unsafe { napi_utils::read_typedarray_data(env.raw(), js_val.raw()) }
-        .ok_or_else(|| {
-        napi::Error::from_reason("Expected a Uint8Array argument for RustBuffer".to_string())
-    })?;
-
-    if length > i32::MAX as usize {
-        return Err(napi::Error::from_reason(
-            "RustBuffer too large for ForeignBytes (max 2GB)".to_string(),
-        ));
-    }
-    let foreign = ForeignBytesC {
-        len: length as i32,
-        data: if length > 0 {
-            data_ptr
-        } else {
-            std::ptr::null()
-        },
-    };
-
-    let mut call_status = RustCallStatusC::default();
-    // SAFETY: `rb_from_bytes_ptr` was obtained via `dlsym` for the symbol whose name
-    // was provided under `symbols.rustbufferFromBytes` in the JS definitions. We
-    // transmute it to `RustBufferFromBytesFn` — the correct signature for UniFFI's
-    // `rustbuffer_from_bytes` — which takes a `ForeignBytesC` by value and a
-    // `*mut RustCallStatusC`. The symbol was resolved at registration time, and the
-    // library remains loaded, so the pointer is valid.
-    let from_bytes: RustBufferFromBytesFn = unsafe { std::mem::transmute(rb_from_bytes_ptr) };
-    let rb = unsafe { from_bytes(foreign, &mut call_status as *mut RustCallStatusC) };
-
-    if call_status.code != 0 {
-        return Err(napi::Error::from_reason(
-            "rustbuffer_from_bytes failed".to_string(),
-        ));
-    }
-
-    Ok(rb)
 }
 
 /// Convert a `RustBufferC` to a JS `Uint8Array`, then free the native buffer.

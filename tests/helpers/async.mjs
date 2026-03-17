@@ -63,14 +63,10 @@ function continuationCallback(handle, pollResult) {
  * @param {object} [opts.callStatus] - { code: 0 } RustCallStatus object for complete()
  * @returns {Promise<*>} The lifted result
  */
-async function uniffiRustCallAsync(nm, {
-  rustFutureFunc,
-  pollFunc,
-  completeFunc,
-  freeFunc,
-  liftFunc,
-  callStatus,
-}) {
+async function uniffiRustCallAsync(
+  nm,
+  { rustFutureFunc, pollFunc, completeFunc, freeFunc, liftFunc, callStatus },
+) {
   const futureHandle = rustFutureFunc();
   const status = callStatus || { code: 0 };
 

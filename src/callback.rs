@@ -609,7 +609,10 @@ pub unsafe fn c_arg_to_js(
 ///
 /// The type mapping is handled by [`ffi_type_for`], which converts each
 /// [`FfiTypeDesc`] variant to the corresponding libffi [`Type`].
-pub fn build_callback_cif(callback_def: &CallbackDef, struct_defs: &HashMap<String, StructDef>) -> Cif {
+pub fn build_callback_cif(
+    callback_def: &CallbackDef,
+    struct_defs: &HashMap<String, StructDef>,
+) -> Cif {
     let cif_arg_types: Vec<Type> = callback_def
         .args
         .iter()
