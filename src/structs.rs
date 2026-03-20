@@ -1153,7 +1153,8 @@ pub fn build_vtable_struct(
             }
             _ => {
                 return Err(napi::Error::from_reason(format!(
-                    "Unsupported struct field type for '{}': {:?}. Only Callback fields are supported in VTable structs.",
+                    "Unsupported struct field type for '{}': {:?}. \
+                     Only Callback fields are supported in VTable structs.",
                     field.name, field.field_type
                 )));
             }

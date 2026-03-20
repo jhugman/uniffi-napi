@@ -71,7 +71,10 @@ pub fn ffi_type_for(
         )),
         FfiTypeDesc::Struct(name) => {
             let struct_def = struct_defs.get(name).ok_or_else(|| {
-                napi::Error::from_reason(format!("Unknown struct type: '{name}'. Ensure it is defined in the structs section of register()."))
+                napi::Error::from_reason(format!(
+                    "Unknown struct type: '{name}'. \
+                     Ensure it is defined in the structs section of register()."
+                ))
             })?;
             let field_types = struct_def
                 .fields
