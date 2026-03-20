@@ -341,13 +341,10 @@ pub unsafe fn read_raw_arg(
             let len = rb.len as usize;
 
             // Copy the buffer data into an owned Vec for safe cross-thread transport.
+            // SAFETY: `rb.data` points to at least `len` readable bytes
+            // (contract of UniFFI's RustBuffer).
             let data = if len > 0 && !rb.data.is_null() {
-                let mut v = vec![0u8; len];
-                // SAFETY: `rb.data` points to at least `len` readable bytes
-                // (contract of UniFFI's RustBuffer). The destination `v` was
-                // just allocated with exactly `len` bytes.
-                std::ptr::copy_nonoverlapping(rb.data, v.as_mut_ptr(), len);
-                v
+                std::slice::from_raw_parts(rb.data, len).to_vec()
             } else {
                 Vec::new()
             };
@@ -486,14 +483,10 @@ pub fn js_return_to_raw(
                 // Read the Uint8Array's underlying data pointer so we can copy
                 // the bytes into an owned Vec for cross-thread transport.
                 let (data, length) = napi_utils::read_typedarray_data(raw_env, js_val.raw())?;
+                // SAFETY: `data` points to the JS TypedArray's backing store,
+                // which remains valid for the duration of this synchronous call.
                 let bytes = if length > 0 && !data.is_null() {
-                    let mut v = vec![0u8; length];
-                    // SAFETY: `data` points to the JS TypedArray's backing
-                    // store, which remains valid for the duration of this
-                    // synchronous call. `v` was just allocated with `length`
-                    // bytes. The regions do not overlap.
-                    std::ptr::copy_nonoverlapping(data, v.as_mut_ptr(), length);
-                    v
+                    std::slice::from_raw_parts(data, length).to_vec()
                 } else {
                     Vec::new()
                 };
