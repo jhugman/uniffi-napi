@@ -36,43 +36,42 @@ use crate::structs::StructDef;
 /// correct `Type::structure`. Pass the full struct definitions map from the registration
 /// pipeline so that any by-value struct fields are resolved correctly.
 ///
-/// # Panics
+/// # Errors
 ///
-/// - Panics on `ForeignBytes`, which has no CIF representation.
-/// - Panics on `Struct(name)` when `name` is not found in `struct_defs`.
-pub fn ffi_type_for(desc: &FfiTypeDesc, struct_defs: &HashMap<String, StructDef>) -> Type {
+/// - Returns an error on `ForeignBytes`, which has no CIF representation.
+/// - Returns an error on `Struct(name)` when `name` is not found in `struct_defs`.
+pub fn ffi_type_for(desc: &FfiTypeDesc, struct_defs: &HashMap<String, StructDef>) -> napi::Result<Type> {
     match desc {
-        FfiTypeDesc::UInt8 => Type::u8(),
-        FfiTypeDesc::Int8 => Type::i8(),
-        FfiTypeDesc::UInt16 => Type::u16(),
-        FfiTypeDesc::Int16 => Type::i16(),
-        FfiTypeDesc::UInt32 => Type::u32(),
-        FfiTypeDesc::Int32 => Type::i32(),
-        FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => Type::u64(),
-        FfiTypeDesc::Int64 => Type::i64(),
-        FfiTypeDesc::Float32 => Type::f32(),
-        FfiTypeDesc::Float64 => Type::f64(),
+        FfiTypeDesc::UInt8 => Ok(Type::u8()),
+        FfiTypeDesc::Int8 => Ok(Type::i8()),
+        FfiTypeDesc::UInt16 => Ok(Type::u16()),
+        FfiTypeDesc::Int16 => Ok(Type::i16()),
+        FfiTypeDesc::UInt32 => Ok(Type::u32()),
+        FfiTypeDesc::Int32 => Ok(Type::i32()),
+        FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => Ok(Type::u64()),
+        FfiTypeDesc::Int64 => Ok(Type::i64()),
+        FfiTypeDesc::Float32 => Ok(Type::f32()),
+        FfiTypeDesc::Float64 => Ok(Type::f64()),
         FfiTypeDesc::VoidPointer
         | FfiTypeDesc::Reference(_)
         | FfiTypeDesc::MutReference(_)
-        | FfiTypeDesc::Callback(_) => Type::pointer(),
-        FfiTypeDesc::Void => Type::void(),
-        FfiTypeDesc::RustCallStatus => Type::pointer(), // always passed as &mut
-        FfiTypeDesc::RustBuffer => Type::structure(vec![Type::u64(), Type::u64(), Type::pointer()]),
+        | FfiTypeDesc::Callback(_) => Ok(Type::pointer()),
+        FfiTypeDesc::Void => Ok(Type::void()),
+        FfiTypeDesc::RustCallStatus => Ok(Type::pointer()), // always passed as &mut
+        FfiTypeDesc::RustBuffer => Ok(Type::structure(vec![Type::u64(), Type::u64(), Type::pointer()])),
         FfiTypeDesc::ForeignBytes => {
-            panic!("ForeignBytes has no CIF representation; it is not used in UniFFI function signatures")
+            Err(napi::Error::from_reason("ForeignBytes has no CIF representation; it is not used in UniFFI function signatures"))
         }
         FfiTypeDesc::Struct(name) => {
-            let struct_def = struct_defs.get(name).unwrap_or_else(|| {
-                panic!("Unknown struct type: '{name}'. Ensure it is defined in the structs section of register().")
-            });
-            Type::structure(
-                struct_def
-                    .fields
-                    .iter()
-                    .map(|f| ffi_type_for(&f.field_type, struct_defs))
-                    .collect::<Vec<_>>(),
-            )
+            let struct_def = struct_defs.get(name).ok_or_else(|| {
+                napi::Error::from_reason(format!("Unknown struct type: '{name}'. Ensure it is defined in the structs section of register()."))
+            })?;
+            let field_types = struct_def
+                .fields
+                .iter()
+                .map(|f| ffi_type_for(&f.field_type, struct_defs))
+                .collect::<napi::Result<Vec<_>>>()?;
+            Ok(Type::structure(field_types))
         }
     }
 }

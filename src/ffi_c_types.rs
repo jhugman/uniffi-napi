@@ -79,3 +79,13 @@ pub(crate) type RustBufferFromBytesFn =
 /// Signature of the `*_rustbuffer_free` symbol: takes an owned `RustBufferC` and
 /// an out-parameter for call status, deallocates the buffer.
 pub(crate) type RustBufferFreeFn = unsafe extern "C" fn(RustBufferC, *mut RustCallStatusC);
+
+/// Resolved function pointers for RustBuffer lifecycle management.
+///
+/// These two symbols are resolved once during [`crate::register::register`] and
+/// threaded through to every site that needs to allocate or free RustBuffers.
+#[derive(Clone, Copy)]
+pub(crate) struct RustBufferOps {
+    pub from_bytes_ptr: *const std::ffi::c_void,
+    pub free_ptr: *const std::ffi::c_void,
+}

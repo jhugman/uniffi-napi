@@ -40,7 +40,7 @@ use napi::{Env, JsFunction, JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::callback::CallbackDef;
 use crate::cif::ffi_type_for;
-use crate::ffi_c_types::RustBufferC;
+use crate::ffi_c_types::{RustBufferC, RustBufferOps};
 use crate::ffi_type::FfiTypeDesc;
 use crate::marshal;
 use crate::napi_utils;
@@ -123,7 +123,7 @@ pub fn marshal_js_struct_to_bytes(
         .fields
         .iter()
         .map(|f| ffi_type_for(&f.field_type, struct_defs))
-        .collect();
+        .collect::<napi::Result<Vec<_>>>()?;
     let struct_type = Type::structure(field_ffi_types);
 
     // Force libffi to compute size/alignment for this struct (and any nested structs).
@@ -251,16 +251,15 @@ pub fn create_fn_pointer_wrapper(
     fn_ptr: *const c_void,
     cb_def: &CallbackDef,
     struct_defs: &HashMap<String, StructDef>,
-    rb_from_bytes_ptr: *const c_void,
-    _rb_free_ptr: *const c_void,
+    rb_ops: &RustBufferOps,
 ) -> Result<JsFunction> {
     // Build CIF from the callback definition
     let cif_arg_types: Vec<Type> = cb_def
         .args
         .iter()
         .map(|a| ffi_type_for(a, struct_defs))
-        .collect();
-    let cif_ret_type = ffi_type_for(&cb_def.ret, struct_defs);
+        .collect::<napi::Result<Vec<_>>>()?;
+    let cif_ret_type = ffi_type_for(&cb_def.ret, struct_defs)?;
     let cif = Cif::new(cif_arg_types, cif_ret_type);
 
     // Wrap in Rc for capture by the closure (single-threaded napi context)
@@ -273,7 +272,7 @@ pub fn create_fn_pointer_wrapper(
     // We wrap them in a newtype to satisfy Send requirements of create_function_from_closure,
     // even though they are only ever called on the main thread.
     let fn_ptr_val = fn_ptr as usize;
-    let rb_from_bytes_val = rb_from_bytes_ptr as usize;
+    let rb_from_bytes_val = rb_ops.from_bytes_ptr as usize;
 
     let js_func = env.create_function_from_closure("fn_pointer_wrapper", move |ctx| {
         let fn_ptr = fn_ptr_val as *const c_void;

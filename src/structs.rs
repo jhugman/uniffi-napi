@@ -29,7 +29,8 @@
 //! must be widened to `ffi_arg` (unsigned) or `ffi_sarg` (signed). This is a libffi
 //! convention documented in the libffi manual, not a Rust quirk. The
 //! [`write_return_value`] and [`write_raw_return_value`] functions implement this
-//! widening. `Float32` and `Float64` are written at their natural width. Types >= 64
+//! widening when called with `widen_to_ffi_arg: true`. `Float32` and `Float64` are
+//! written at their natural width. Types >= 64
 //! bits (`Int64`, `UInt64`, `RustBuffer`) are also written at natural width since they
 //! are already at least as wide as `ffi_arg` on 64-bit platforms.
 //!
@@ -61,7 +62,7 @@ use crate::callback::{
     c_arg_to_js, js_return_to_raw, raw_arg_to_js, read_raw_arg, CallbackDef, RawCallbackArg,
 };
 use crate::cif::ffi_type_for;
-use crate::ffi_c_types::RustBufferC;
+use crate::ffi_c_types::{RustBufferC, RustBufferOps};
 use crate::ffi_type::FfiTypeDesc;
 use crate::fn_pointer;
 use crate::is_main_thread;
@@ -176,12 +177,10 @@ pub struct VTableTrampolineUserdata {
     /// and the RustCallStatus pointer.
     pub out_return: bool,
     tsfn: Option<ThreadsafeFunction<VTableCallRequest, ErrorStrategy::Fatal>>,
-    /// Pointer to the library's `rustbuffer_from_bytes` function, resolved via `dlsym`.
-    /// Used when the return type is `RustBuffer` to allocate a buffer from byte data.
-    pub rb_from_bytes_ptr: *const c_void,
-    /// Pointer to the library's `rustbuffer_free` function, resolved via `dlsym`.
-    /// Used to free `RustBuffer` arguments received from C before converting to JS.
-    pub rb_free_ptr: *const c_void,
+    /// Resolved function pointers for `rustbuffer_from_bytes` and `rustbuffer_free`.
+    /// Used to allocate RustBuffers from byte data and to free RustBuffer arguments
+    /// received from C before converting to JS.
+    pub rb_ops: RustBufferOps,
     /// All callback definitions, needed for wrapping `Callback`-typed arguments
     /// (C function pointers) as callable JS functions.
     pub callback_defs: HashMap<String, CallbackDef>,
@@ -191,10 +190,10 @@ pub struct VTableTrampolineUserdata {
 }
 
 // SAFETY: `raw_env` and `fn_ref` are only dereferenced on the main (JS) thread.
-// The `tsfn` field is itself `Send` + `Sync`. The `rb_from_bytes_ptr` and
-// `rb_free_ptr` are plain C function pointers into a loaded shared library and
-// are safe to call from any thread. The struct is leaked to a `'static`
-// reference before any concurrent access occurs, so there are no data races.
+// The `tsfn` field is itself `Send` + `Sync`. The `rb_ops` contains plain C
+// function pointers into a loaded shared library and are safe to call from any
+// thread. The struct is leaked to a `'static` reference before any concurrent
+// access occurs, so there are no data races.
 unsafe impl Send for VTableTrampolineUserdata {}
 unsafe impl Sync for VTableTrampolineUserdata {}
 
@@ -300,14 +299,13 @@ unsafe fn vtable_trampoline_main_thread(
                     fn_ptr,
                     cb_def,
                     &userdata.struct_defs,
-                    userdata.rb_from_bytes_ptr,
-                    userdata.rb_free_ptr,
+                    &userdata.rb_ops,
                 ) {
                     Ok(f) => f.into_unknown(),
                     Err(_) => return,
                 }
             }
-            _ => match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) {
+            _ => match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_ops.free_ptr) {
                 Ok(v) => v,
                 Err(_) => return,
             },
@@ -385,20 +383,22 @@ unsafe fn vtable_trampoline_main_thread(
         if userdata.out_return && !out_return_ptr.is_null() {
             // Write the return value to the out-pointer at natural type width
             // (no ffi_arg widening — the out-pointer is a concrete typed variable).
-            write_out_return_value(
+            write_return_value(
                 out_return_ptr,
                 &userdata.ret_type,
                 userdata.raw_env,
                 js_ret,
-                userdata.rb_from_bytes_ptr,
+                userdata.rb_ops.from_bytes_ptr,
+                false,
             );
         } else {
             write_return_value(
-                result,
+                result as *mut c_void,
                 &userdata.ret_type,
                 userdata.raw_env,
                 js_ret,
-                userdata.rb_from_bytes_ptr,
+                userdata.rb_ops.from_bytes_ptr,
+                true,
             );
         }
     }
@@ -436,7 +436,7 @@ unsafe fn vtable_trampoline_cross_thread(
         // SAFETY: libffi's CIF guarantees `args` has at least `declared_count`
         // entries, each pointing to a value of the corresponding type.
         let arg_ptr = *args.add(i);
-        let raw_arg = match read_raw_arg(desc, arg_ptr, userdata.rb_free_ptr) {
+        let raw_arg = match read_raw_arg(desc, arg_ptr, userdata.rb_ops.free_ptr) {
             Some(a) => a,
             None => return,
         };
@@ -496,18 +496,20 @@ unsafe fn vtable_trampoline_cross_thread(
             if let Some(ref raw_ret) = response.return_value {
                 if userdata.out_return && !out_return_ptr.is_null() {
                     // Write the return value to the out-pointer at natural type width.
-                    write_raw_out_return_value(
+                    write_raw_return_value(
                         out_return_ptr,
                         &userdata.ret_type,
                         raw_ret,
-                        userdata.rb_from_bytes_ptr,
+                        userdata.rb_ops.from_bytes_ptr,
+                        false,
                     );
                 } else {
                     write_raw_return_value(
-                        result,
+                        result as *mut c_void,
                         &userdata.ret_type,
                         raw_ret,
-                        userdata.rb_from_bytes_ptr,
+                        userdata.rb_ops.from_bytes_ptr,
+                        true,
                     );
                 }
             }
@@ -529,110 +531,133 @@ unsafe fn vtable_trampoline_cross_thread(
     }
 }
 
-/// Write a JS return value into the libffi result buffer (same-thread path).
+/// Write a JS return value into a destination buffer (same-thread path).
 ///
-/// This function converts a `JsUnknown` returned by a JS callback into the raw
-/// bytes that libffi expects in the `result` buffer.
+/// This function converts a `JsUnknown` returned by a JS callback into raw
+/// bytes written to `dest`.
 ///
-/// # The `ffi_arg` widening convention
+/// # The `widen_to_ffi_arg` parameter
 ///
-/// For closure return values, libffi requires integer types *smaller* than the
-/// machine word to be widened:
+/// When `true`, integer types smaller than 32 bits are widened to match the
+/// libffi closure return convention:
 /// - Signed types (`Int8`, `Int16`, `Int32`) are sign-extended to `ffi_sarg`.
 /// - Unsigned types (`UInt8`, `UInt16`, `UInt32`) are zero-extended to `ffi_arg`.
-/// - `Float32` and `Float64` are written at their natural width.
-/// - `Int64`, `UInt64`, `Handle`, and `RustBuffer` are already >= 64 bits on
-///   64-bit platforms, so no widening is needed.
+///
+/// When `false`, all integers are written at their natural width (`i8`, `u8`,
+/// `i16`, etc.). Use this when writing to an out-pointer that points to a
+/// concrete typed variable on the caller's stack.
+///
+/// `Float32`, `Float64`, `Int64`, `UInt64`, `Handle`, and `RustBuffer` are
+/// always written at their natural width regardless of the flag.
 ///
 /// # Safety
 ///
-/// - `result` must point to a libffi-allocated buffer with sufficient size for the
-///   declared return type.
+/// - `dest` must point to a writable buffer with sufficient size for the
+///   declared return type (or `ffi_arg`/`ffi_sarg` when widening).
 /// - `raw_env` must be the current thread's valid napi environment.
 /// - `rb_from_bytes_ptr` (when non-null) must point to the library's
 ///   `rustbuffer_from_bytes` function with the signature [`RustBufferFromBytesFn`].
-///   The `std::mem::transmute` is safe because this pointer was resolved via `dlsym`
-///   from the loaded library and has the correct function signature.
 unsafe fn write_return_value(
-    result: &mut c_void,
+    dest: *mut c_void,
     ret_type: &FfiTypeDesc,
     raw_env: napi::sys::napi_env,
     js_ret: napi::JsUnknown,
     rb_from_bytes_ptr: *const c_void,
+    widen_to_ffi_arg: bool,
 ) {
-    // SAFETY: `result` points to libffi's result buffer, which is guaranteed to be
-    // large enough for the declared return type. Each arm writes exactly the type
-    // (or its widened form) that the CIF declared.
-    let result_ptr = result as *mut c_void;
     match ret_type {
         FfiTypeDesc::Void => {}
         FfiTypeDesc::Int8 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut low::ffi_sarg) = v as i8 as low::ffi_sarg;
+                    if widen_to_ffi_arg {
+                        *(dest as *mut low::ffi_sarg) = v as i8 as low::ffi_sarg;
+                    } else {
+                        *(dest as *mut i8) = v as i8;
+                    }
                 }
             }
         }
         FfiTypeDesc::UInt8 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut low::ffi_arg) = v as u8 as low::ffi_arg;
+                    if widen_to_ffi_arg {
+                        *(dest as *mut low::ffi_arg) = v as u8 as low::ffi_arg;
+                    } else {
+                        *(dest as *mut u8) = v as u8;
+                    }
                 }
             }
         }
         FfiTypeDesc::Int16 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut low::ffi_sarg) = v as i16 as low::ffi_sarg;
+                    if widen_to_ffi_arg {
+                        *(dest as *mut low::ffi_sarg) = v as i16 as low::ffi_sarg;
+                    } else {
+                        *(dest as *mut i16) = v as i16;
+                    }
                 }
             }
         }
         FfiTypeDesc::UInt16 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut low::ffi_arg) = v as u16 as low::ffi_arg;
+                    if widen_to_ffi_arg {
+                        *(dest as *mut low::ffi_arg) = v as u16 as low::ffi_arg;
+                    } else {
+                        *(dest as *mut u16) = v as u16;
+                    }
                 }
             }
         }
         FfiTypeDesc::Int32 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut low::ffi_sarg) = v as i32 as low::ffi_sarg;
+                    if widen_to_ffi_arg {
+                        *(dest as *mut low::ffi_sarg) = v as i32 as low::ffi_sarg;
+                    } else {
+                        *(dest as *mut i32) = v as i32;
+                    }
                 }
             }
         }
         FfiTypeDesc::UInt32 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut low::ffi_arg) = v as u32 as low::ffi_arg;
+                    if widen_to_ffi_arg {
+                        *(dest as *mut low::ffi_arg) = v as u32 as low::ffi_arg;
+                    } else {
+                        *(dest as *mut u32) = v as u32;
+                    }
                 }
             }
         }
         FfiTypeDesc::Int64 => {
             if let Ok(bigint) = napi::JsBigInt::from_raw(raw_env, js_ret.raw()) {
                 if let Ok((v, _)) = bigint.get_i64() {
-                    *(result_ptr as *mut i64) = v;
+                    *(dest as *mut i64) = v;
                 }
             }
         }
         FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => {
             if let Ok(bigint) = napi::JsBigInt::from_raw(raw_env, js_ret.raw()) {
                 if let Ok((v, _)) = bigint.get_u64() {
-                    *(result_ptr as *mut u64) = v;
+                    *(dest as *mut u64) = v;
                 }
             }
         }
         FfiTypeDesc::Float32 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut f32) = v as f32;
+                    *(dest as *mut f32) = v as f32;
                 }
             }
         }
         FfiTypeDesc::Float64 => {
             if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
                 if let Ok(v) = num.get_double() {
-                    *(result_ptr as *mut f64) = v;
+                    *(dest as *mut f64) = v;
                 }
             }
         }
@@ -645,7 +670,7 @@ unsafe fn write_return_value(
                 return;
             }
             if let Ok(rb) = napi_utils::rustbuffer_from_raw_bytes(data, length, rb_from_bytes_ptr) {
-                *(result_ptr as *mut RustBufferC) = rb;
+                *(dest as *mut RustBufferC) = rb;
             }
         }
         _ => {
@@ -655,237 +680,92 @@ unsafe fn write_return_value(
     }
 }
 
-/// Write a JS return value into an out-pointer (UniFFI 0.31+ VTable convention).
-///
-/// Unlike [`write_return_value`], this writes at the **natural type width** (no
-/// `ffi_arg`/`ffi_sarg` widening), because the out-pointer points to a concrete
-/// typed variable on the caller's stack (e.g. `u32`, not a libffi result buffer).
-///
-/// # Safety
-///
-/// - `out_ptr` must point to a valid, writable memory region of at least the
-///   size of the declared return type.
-/// - Must be called on the main JS thread (napi calls require it).
-unsafe fn write_out_return_value(
-    out_ptr: *mut c_void,
-    ret_type: &FfiTypeDesc,
-    raw_env: napi::sys::napi_env,
-    js_ret: napi::JsUnknown,
-    rb_from_bytes_ptr: *const c_void,
-) {
-    match ret_type {
-        FfiTypeDesc::Void => {}
-        FfiTypeDesc::Int8 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut i8) = v as i8;
-                }
-            }
-        }
-        FfiTypeDesc::UInt8 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut u8) = v as u8;
-                }
-            }
-        }
-        FfiTypeDesc::Int16 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut i16) = v as i16;
-                }
-            }
-        }
-        FfiTypeDesc::UInt16 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut u16) = v as u16;
-                }
-            }
-        }
-        FfiTypeDesc::Int32 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut i32) = v as i32;
-                }
-            }
-        }
-        FfiTypeDesc::UInt32 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut u32) = v as u32;
-                }
-            }
-        }
-        FfiTypeDesc::Int64 => {
-            if let Ok(bigint) = napi::JsBigInt::from_raw(raw_env, js_ret.raw()) {
-                if let Ok((v, _)) = bigint.get_i64() {
-                    *(out_ptr as *mut i64) = v;
-                }
-            }
-        }
-        FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => {
-            if let Ok(bigint) = napi::JsBigInt::from_raw(raw_env, js_ret.raw()) {
-                if let Ok((v, _)) = bigint.get_u64() {
-                    *(out_ptr as *mut u64) = v;
-                }
-            }
-        }
-        FfiTypeDesc::Float32 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut f32) = v as f32;
-                }
-            }
-        }
-        FfiTypeDesc::Float64 => {
-            if let Ok(num) = napi::JsNumber::from_raw(raw_env, js_ret.raw()) {
-                if let Ok(v) = num.get_double() {
-                    *(out_ptr as *mut f64) = v;
-                }
-            }
-        }
-        FfiTypeDesc::RustBuffer => {
-            let (data, length) = match napi_utils::read_typedarray_data(raw_env, js_ret.raw()) {
-                Some(v) => v,
-                None => return,
-            };
-            if rb_from_bytes_ptr.is_null() {
-                return;
-            }
-            if let Ok(rb) = napi_utils::rustbuffer_from_raw_bytes(data, length, rb_from_bytes_ptr) {
-                *(out_ptr as *mut RustBufferC) = rb;
-            }
-        }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "write_out_return_value: unsupported return type {:?}",
-                ret_type
-            );
-        }
-    }
-}
-
-/// Write a [`RawCallbackArg`] return value into an out-pointer (cross-thread path,
-/// UniFFI 0.31+ VTable convention).
-///
-/// Unlike [`write_raw_return_value`], this writes at the natural type width.
-///
-/// # Safety
-///
-/// - `out_ptr` must point to a writable memory region of the declared return type's size.
-/// - `rb_from_bytes_ptr` (when non-null) must be a valid `RustBufferFromBytesFn`.
-unsafe fn write_raw_out_return_value(
-    out_ptr: *mut c_void,
-    ret_type: &FfiTypeDesc,
-    raw_ret: &RawCallbackArg,
-    rb_from_bytes_ptr: *const c_void,
-) {
-    match (ret_type, raw_ret) {
-        (FfiTypeDesc::Int8, RawCallbackArg::Int8(v)) => {
-            *(out_ptr as *mut i8) = *v;
-        }
-        (FfiTypeDesc::UInt8, RawCallbackArg::UInt8(v)) => {
-            *(out_ptr as *mut u8) = *v;
-        }
-        (FfiTypeDesc::Int16, RawCallbackArg::Int16(v)) => {
-            *(out_ptr as *mut i16) = *v;
-        }
-        (FfiTypeDesc::UInt16, RawCallbackArg::UInt16(v)) => {
-            *(out_ptr as *mut u16) = *v;
-        }
-        (FfiTypeDesc::Int32, RawCallbackArg::Int32(v)) => {
-            *(out_ptr as *mut i32) = *v;
-        }
-        (FfiTypeDesc::UInt32, RawCallbackArg::UInt32(v)) => {
-            *(out_ptr as *mut u32) = *v;
-        }
-        (FfiTypeDesc::Int64, RawCallbackArg::Int64(v)) => {
-            *(out_ptr as *mut i64) = *v;
-        }
-        (FfiTypeDesc::UInt64 | FfiTypeDesc::Handle, RawCallbackArg::UInt64(v)) => {
-            *(out_ptr as *mut u64) = *v;
-        }
-        (FfiTypeDesc::Float32, RawCallbackArg::Float32(v)) => {
-            *(out_ptr as *mut f32) = *v;
-        }
-        (FfiTypeDesc::Float64, RawCallbackArg::Float64(v)) => {
-            *(out_ptr as *mut f64) = *v;
-        }
-        (FfiTypeDesc::RustBuffer, RawCallbackArg::RustBuffer(data)) => {
-            if rb_from_bytes_ptr.is_null() {
-                return;
-            }
-            if let Ok(rb) =
-                napi_utils::rustbuffer_from_raw_bytes(data.as_ptr(), data.len(), rb_from_bytes_ptr)
-            {
-                *(out_ptr as *mut RustBufferC) = rb;
-            }
-        }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "write_raw_out_return_value: unsupported type pair {:?} / {:?}",
-                ret_type, raw_ret
-            );
-        }
-    }
-}
-
-/// Write a [`RawCallbackArg`] return value into the libffi result buffer (cross-thread path).
+/// Write a [`RawCallbackArg`] return value into a destination buffer (cross-thread path).
 ///
 /// This is the cross-thread counterpart to [`write_return_value`]. The JS thread has
 /// already converted the JS return value into a [`RawCallbackArg`]; this function
-/// writes it into the libffi result buffer on the *calling* thread.
+/// writes it into the destination buffer on the *calling* thread.
 ///
-/// The same `ffi_arg`/`ffi_sarg` widening rules apply — see [`write_return_value`] for
-/// the rationale.
+/// # The `widen_to_ffi_arg` parameter
+///
+/// When `true`, integer types smaller than 32 bits are widened to match the
+/// libffi closure return convention:
+/// - Signed types (`Int8`, `Int16`, `Int32`) are sign-extended to `ffi_sarg`.
+/// - Unsigned types (`UInt8`, `UInt16`, `UInt32`) are zero-extended to `ffi_arg`.
+///
+/// When `false`, all integers are written at their natural width (`i8`, `u8`,
+/// `i16`, etc.). Use this when writing to an out-pointer that points to a
+/// concrete typed variable on the caller's stack.
+///
+/// `Float32`, `Float64`, `Int64`, `UInt64`, `Handle`, and `RustBuffer` are
+/// always written at their natural width regardless of the flag.
 ///
 /// # Safety
 ///
-/// - `result` must point to libffi's result buffer with sufficient size.
+/// - `dest` must point to a writable buffer with sufficient size.
 /// - `rb_from_bytes_ptr` (when non-null) must be a valid `RustBufferFromBytesFn`.
 ///   `rustbuffer_from_bytes` is a pure C function, safe to call from any thread.
 unsafe fn write_raw_return_value(
-    result: &mut c_void,
+    dest: *mut c_void,
     ret_type: &FfiTypeDesc,
     raw_ret: &RawCallbackArg,
     rb_from_bytes_ptr: *const c_void,
+    widen_to_ffi_arg: bool,
 ) {
-    // SAFETY: Each arm writes exactly the declared return type (or its widened form)
-    // into the libffi result buffer, which is guaranteed to be large enough.
-    let result_ptr = result as *mut c_void;
     match (ret_type, raw_ret) {
         (FfiTypeDesc::Int8, RawCallbackArg::Int8(v)) => {
-            *(result_ptr as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+            if widen_to_ffi_arg {
+                *(dest as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+            } else {
+                *(dest as *mut i8) = *v;
+            }
         }
         (FfiTypeDesc::UInt8, RawCallbackArg::UInt8(v)) => {
-            *(result_ptr as *mut low::ffi_arg) = *v as low::ffi_arg;
+            if widen_to_ffi_arg {
+                *(dest as *mut low::ffi_arg) = *v as low::ffi_arg;
+            } else {
+                *(dest as *mut u8) = *v;
+            }
         }
         (FfiTypeDesc::Int16, RawCallbackArg::Int16(v)) => {
-            *(result_ptr as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+            if widen_to_ffi_arg {
+                *(dest as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+            } else {
+                *(dest as *mut i16) = *v;
+            }
         }
         (FfiTypeDesc::UInt16, RawCallbackArg::UInt16(v)) => {
-            *(result_ptr as *mut low::ffi_arg) = *v as low::ffi_arg;
+            if widen_to_ffi_arg {
+                *(dest as *mut low::ffi_arg) = *v as low::ffi_arg;
+            } else {
+                *(dest as *mut u16) = *v;
+            }
         }
         (FfiTypeDesc::Int32, RawCallbackArg::Int32(v)) => {
-            *(result_ptr as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+            if widen_to_ffi_arg {
+                *(dest as *mut low::ffi_sarg) = *v as low::ffi_sarg;
+            } else {
+                *(dest as *mut i32) = *v;
+            }
         }
         (FfiTypeDesc::UInt32, RawCallbackArg::UInt32(v)) => {
-            *(result_ptr as *mut low::ffi_arg) = *v as low::ffi_arg;
+            if widen_to_ffi_arg {
+                *(dest as *mut low::ffi_arg) = *v as low::ffi_arg;
+            } else {
+                *(dest as *mut u32) = *v;
+            }
         }
         (FfiTypeDesc::Int64, RawCallbackArg::Int64(v)) => {
-            *(result_ptr as *mut i64) = *v;
+            *(dest as *mut i64) = *v;
         }
         (FfiTypeDesc::UInt64 | FfiTypeDesc::Handle, RawCallbackArg::UInt64(v)) => {
-            *(result_ptr as *mut u64) = *v;
+            *(dest as *mut u64) = *v;
         }
         (FfiTypeDesc::Float32, RawCallbackArg::Float32(v)) => {
-            *(result_ptr as *mut f32) = *v;
+            *(dest as *mut f32) = *v;
         }
         (FfiTypeDesc::Float64, RawCallbackArg::Float64(v)) => {
-            *(result_ptr as *mut f64) = *v;
+            *(dest as *mut f64) = *v;
         }
         (FfiTypeDesc::RustBuffer, RawCallbackArg::RustBuffer(data)) => {
             if rb_from_bytes_ptr.is_null() {
@@ -894,7 +774,7 @@ unsafe fn write_raw_return_value(
             if let Ok(rb) =
                 napi_utils::rustbuffer_from_raw_bytes(data.as_ptr(), data.len(), rb_from_bytes_ptr)
             {
-                *(result_ptr as *mut RustBufferC) = rb;
+                *(dest as *mut RustBufferC) = rb;
             }
         }
         _ => {
@@ -971,8 +851,7 @@ fn vtable_tsfn_handler(env: &Env, userdata: &VTableTrampolineUserdata, request: 
                     fn_ptr,
                     cb_def,
                     &userdata.struct_defs,
-                    userdata.rb_from_bytes_ptr,
-                    userdata.rb_free_ptr,
+                    &userdata.rb_ops,
                 ) {
                     Ok(f) => f.into_unknown(),
                     Err(_) => {
@@ -1130,8 +1009,7 @@ pub fn build_vtable_struct(
     js_obj: &JsObject,
     callback_defs: &HashMap<String, CallbackDef>,
     struct_defs: &HashMap<String, StructDef>,
-    rb_from_bytes_ptr: *const c_void,
-    rb_free_ptr: *const c_void,
+    rb_ops: &RustBufferOps,
 ) -> Result<*const c_void> {
     let field_count = struct_def.fields.len();
     let mut vtable_data: Vec<*const c_void> = Vec::with_capacity(field_count);
@@ -1175,7 +1053,7 @@ pub fn build_vtable_struct(
                     .args
                     .iter()
                     .map(|a| ffi_type_for(a, struct_defs))
-                    .collect();
+                    .collect::<napi::Result<Vec<_>>>()?;
                 if cb_def.out_return {
                     // Out-return pointer: an extra pointer arg before RustCallStatus
                     cif_arg_types.push(Type::pointer());
@@ -1188,7 +1066,7 @@ pub fn build_vtable_struct(
                 let cif_ret_type = if cb_def.out_return {
                     Type::void()
                 } else {
-                    ffi_type_for(&cb_def.ret, struct_defs)
+                    ffi_type_for(&cb_def.ret, struct_defs)?
                 };
                 let cif = Cif::new(cif_arg_types, cif_ret_type);
 
@@ -1201,8 +1079,7 @@ pub fn build_vtable_struct(
                     has_rust_call_status: cb_def.has_rust_call_status,
                     out_return: cb_def.out_return,
                     tsfn: None, // Will be set below
-                    rb_from_bytes_ptr,
-                    rb_free_ptr,
+                    rb_ops: *rb_ops,
                     callback_defs: callback_defs.clone(),
                     struct_defs: struct_defs.clone(),
                 });

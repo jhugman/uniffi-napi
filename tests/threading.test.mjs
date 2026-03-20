@@ -97,7 +97,8 @@ test("callback: receives RustBuffer arg from another thread", async () => {
       status,
     );
     assert.strictEqual(status.code, 0);
-    setTimeout(() => reject(new Error("Timed out")), 5000);
+    const timer = setTimeout(() => reject(new Error("Timed out")), 5000);
+    timer.unref();
   });
 
   assert.strictEqual(result.handle, 99n);

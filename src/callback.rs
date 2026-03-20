@@ -128,7 +128,7 @@ pub enum RawCallbackArg {
 /// trampoline receives it as `&TrampolineUserdata` on every invocation.
 ///
 /// The struct carries everything the trampoline needs for both dispatch paths:
-/// - `raw_env` / `raw_fn`: raw napi handles for the same-thread path.
+/// - `raw_env` / `fn_ref`: raw napi env handle and GC-preventing reference for the same-thread path.
 /// - `tsfn`: an optional [`ThreadsafeFunction`] for the cross-thread path.
 /// - `arg_types`: the FFI type descriptors that tell us how to interpret each
 ///   raw pointer in the libffi `args` array.
@@ -137,8 +137,8 @@ pub enum RawCallbackArg {
 pub struct TrampolineUserdata {
     /// Raw napi environment handle. Only valid on the main thread.
     pub raw_env: napi::sys::napi_env,
-    /// Raw napi handle to the JS callback function. Only valid on the main thread.
-    pub raw_fn: napi::sys::napi_value,
+    /// GC-preventing reference to the JS callback function. Only valid on the main thread.
+    pub fn_ref: napi::sys::napi_ref,
     /// FFI type descriptors for each positional argument, used to interpret
     /// the raw pointers in the libffi `args` array.
     pub arg_types: Vec<FfiTypeDesc>,
@@ -222,9 +222,18 @@ unsafe fn trampoline_main_thread(
     // SAFETY: We are on the main thread, so raw_env is valid.
     let env = Env::from_raw(userdata.raw_env);
 
-    // SAFETY: We are on the main thread and raw_fn is a prevented reference
-    // to a live JS function.
-    let js_fn = match napi::JsFunction::from_raw(userdata.raw_env, userdata.raw_fn) {
+    // SAFETY: We are on the main thread. `fn_ref` was created with refcount=1
+    // by `napi_create_reference`, so the JS function is alive and the reference is valid.
+    let mut raw_fn: napi::sys::napi_value = std::ptr::null_mut();
+    let status =
+        napi::sys::napi_get_reference_value(userdata.raw_env, userdata.fn_ref, &mut raw_fn);
+    if status != napi::sys::Status::napi_ok || raw_fn.is_null() {
+        return;
+    }
+
+    // SAFETY: `raw_fn` is a valid napi_value obtained from the reference above,
+    // and we are on the correct env thread.
+    let js_fn = match napi::JsFunction::from_raw(userdata.raw_env, raw_fn) {
         Ok(f) => f,
         Err(_) => return,
     };
@@ -612,12 +621,12 @@ pub unsafe fn c_arg_to_js(
 pub fn build_callback_cif(
     callback_def: &CallbackDef,
     struct_defs: &HashMap<String, StructDef>,
-) -> Cif {
+) -> napi::Result<Cif> {
     let cif_arg_types: Vec<Type> = callback_def
         .args
         .iter()
         .map(|a| ffi_type_for(a, struct_defs))
-        .collect();
-    let cif_ret_type = ffi_type_for(&callback_def.ret, struct_defs);
-    Cif::new(cif_arg_types, cif_ret_type)
+        .collect::<napi::Result<Vec<_>>>()?;
+    let cif_ret_type = ffi_type_for(&callback_def.ret, struct_defs)?;
+    Ok(Cif::new(cif_arg_types, cif_ret_type))
 }
