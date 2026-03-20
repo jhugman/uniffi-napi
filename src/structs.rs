@@ -274,9 +274,8 @@ unsafe fn vtable_trampoline_main_thread(
 
     // SAFETY: `raw_fn` is a valid napi_value obtained from the reference above,
     // and we are on the correct env thread.
-    let js_fn = match napi::JsFunction::from_raw(userdata.raw_env, raw_fn) {
-        Ok(f) => f,
-        Err(_) => return,
+    let Ok(js_fn) = napi::JsFunction::from_raw(userdata.raw_env, raw_fn) else {
+        return;
     };
 
     let declared_count = userdata.arg_types.len();
@@ -290,9 +289,8 @@ unsafe fn vtable_trampoline_main_thread(
             FfiTypeDesc::Callback(cb_name) => {
                 // Wrap the C function pointer as a callable JS function.
                 let fn_ptr = *(arg_ptr as *const *const c_void);
-                let cb_def = match userdata.callback_defs.get(cb_name) {
-                    Some(d) => d,
-                    None => return,
+                let Some(cb_def) = userdata.callback_defs.get(cb_name) else {
+                    return;
                 };
                 match fn_pointer::create_fn_pointer_wrapper(
                     &env,
@@ -350,9 +348,8 @@ unsafe fn vtable_trampoline_main_thread(
             0
         };
 
-        let mut js_status = match env.create_object() {
-            Ok(o) => o,
-            Err(_) => return,
+        let Ok(mut js_status) = env.create_object() else {
+            return;
         };
         if js_status
             .set_named_property("code", env.create_int32(code).unwrap())
@@ -424,9 +421,8 @@ unsafe fn vtable_trampoline_cross_thread(
     args: *const *const c_void,
     userdata: &VTableTrampolineUserdata,
 ) {
-    let tsfn = match &userdata.tsfn {
-        Some(t) => t,
-        None => return,
+    let Some(tsfn) = &userdata.tsfn else {
+        return;
     };
 
     // Read C args into portable Rust values (no JS interaction needed).
@@ -436,9 +432,8 @@ unsafe fn vtable_trampoline_cross_thread(
         // SAFETY: libffi's CIF guarantees `args` has at least `declared_count`
         // entries, each pointing to a value of the corresponding type.
         let arg_ptr = *args.add(i);
-        let raw_arg = match read_raw_arg(desc, arg_ptr, userdata.rb_ops.free_ptr) {
-            Some(a) => a,
-            None => return,
+        let Some(raw_arg) = read_raw_arg(desc, arg_ptr, userdata.rb_ops.free_ptr) else {
+            return;
         };
         raw_args.push(raw_arg);
     }
@@ -662,9 +657,9 @@ unsafe fn write_return_value(
             }
         }
         FfiTypeDesc::RustBuffer => {
-            let (data, length) = match napi_utils::read_typedarray_data(raw_env, js_ret.raw()) {
-                Some(v) => v,
-                None => return,
+            let Some((data, length)) = napi_utils::read_typedarray_data(raw_env, js_ret.raw())
+            else {
+                return;
             };
             if rb_from_bytes_ptr.is_null() {
                 return;

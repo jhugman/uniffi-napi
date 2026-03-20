@@ -233,9 +233,8 @@ unsafe fn trampoline_main_thread(
 
     // SAFETY: `raw_fn` is a valid napi_value obtained from the reference above,
     // and we are on the correct env thread.
-    let js_fn = match napi::JsFunction::from_raw(userdata.raw_env, raw_fn) {
-        Ok(f) => f,
-        Err(_) => return,
+    let Ok(js_fn) = napi::JsFunction::from_raw(userdata.raw_env, raw_fn) else {
+        return;
     };
 
     let arg_count = userdata.arg_types.len();
@@ -247,9 +246,8 @@ unsafe fn trampoline_main_thread(
         // pointer to the actual C value, whose type matches `desc` because
         // the CIF was built from the same `arg_types`.
         let arg_ptr = *args.add(i);
-        let js_val = match c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) {
-            Ok(v) => v,
-            Err(_) => return,
+        let Ok(js_val) = c_arg_to_js(&env, desc, arg_ptr, userdata.rb_free_ptr) else {
+            return;
         };
         js_args.push(js_val);
     }
@@ -270,9 +268,8 @@ unsafe fn trampoline_main_thread(
 /// Must be called from a non-main thread (caller checks `!is_main_thread()`),
 /// though calling it on the main thread would be safe — just wasteful.
 unsafe fn trampoline_cross_thread(args: *const *const c_void, userdata: &TrampolineUserdata) {
-    let tsfn = match &userdata.tsfn {
-        Some(t) => t,
-        None => return, // No TSF available; silently drop the call.
+    let Some(tsfn) = &userdata.tsfn else {
+        return; // No TSF available; silently drop the call.
     };
 
     let mut raw_args = Vec::with_capacity(userdata.arg_types.len());
@@ -281,9 +278,8 @@ unsafe fn trampoline_cross_thread(args: *const *const c_void, userdata: &Trampol
         // entries. Each `*args.add(i)` yields a pointer to a value whose
         // type matches `desc`.
         let arg_ptr = *args.add(i);
-        let raw_arg = match read_raw_arg(desc, arg_ptr, userdata.rb_free_ptr) {
-            Some(a) => a,
-            None => return,
+        let Some(raw_arg) = read_raw_arg(desc, arg_ptr, userdata.rb_free_ptr) else {
+            return;
         };
         raw_args.push(raw_arg);
     }
