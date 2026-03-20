@@ -78,8 +78,7 @@ fn init() {
 pub fn is_main_thread() -> bool {
     MAIN_THREAD_ID
         .get()
-        .map(|id| *id == std::thread::current().id())
-        .unwrap_or(false)
+        .is_some_and(|id| *id == std::thread::current().id())
 }
 
 /// The top-level napi class exposed to JavaScript.
