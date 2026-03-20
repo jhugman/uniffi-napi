@@ -201,7 +201,7 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
 fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, CallbackDef>> {
     let mut map = HashMap::new();
 
-    // callbacks is optional
+    // Callbacks is optional.
     let has_callbacks: bool = definitions.has_named_property("callbacks")?;
     if !has_callbacks {
         return Ok(map);

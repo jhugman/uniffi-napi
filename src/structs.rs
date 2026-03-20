@@ -1078,7 +1078,7 @@ pub fn build_vtable_struct(
                     ret_type: cb_def.ret.clone(),
                     has_rust_call_status: cb_def.has_rust_call_status,
                     out_return: cb_def.out_return,
-                    tsfn: None, // Will be set below
+                    tsfn: None, // Will be set below.
                     rb_ops: *rb_ops,
                     callback_defs: callback_defs.clone(),
                     struct_defs: struct_defs.clone(),
@@ -1120,7 +1120,7 @@ pub fn build_vtable_struct(
                     )?
                 };
 
-                // Unref so it doesn't keep the event loop alive
+                // Unref so it doesn't keep the event loop alive.
                 let mut tsfn = tsfn;
                 tsfn.unref(env)?;
 
