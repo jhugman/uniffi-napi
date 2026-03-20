@@ -37,12 +37,13 @@
 //! initialization time, and [`is_main_thread`] is the single predicate that every
 //! callback path consults to choose between these two strategies.
 
+use std::sync::OnceLock;
+use std::thread::ThreadId;
+
 use napi::bindgen_prelude::*;
 use napi::module_init;
 use napi::JsObject;
 use napi_derive::napi;
-use std::sync::OnceLock;
-use std::thread::ThreadId;
 
 mod callback;
 mod cif;

@@ -56,6 +56,7 @@ use std::ffi::c_void;
 
 use libffi::low;
 use libffi::middle::{Cif, Closure, Type};
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Env, JsObject, JsUnknown, NapiRaw, NapiValue, Result};
 
 use crate::callback::{
@@ -67,7 +68,6 @@ use crate::ffi_type::FfiTypeDesc;
 use crate::fn_pointer;
 use crate::is_main_thread;
 use crate::napi_utils;
-use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 /// Packed arguments for cross-thread VTable callback dispatch.
 ///

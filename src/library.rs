@@ -1,6 +1,7 @@
+use std::ffi::c_void;
+
 use dlopen2::raw::Library;
 use napi::Result;
-use std::ffi::c_void;
 
 /// A thin wrapper around a `dlopen` handle for a UniFFI shared library.
 ///
