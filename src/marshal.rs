@@ -123,23 +123,26 @@ pub fn js_to_boxed(env: &Env, desc: &FfiTypeDesc, js_val: JsUnknown) -> Result<B
 /// heap-allocated value outlives the argument vector passed to `cif.call`. Each arm
 /// downcasts to the same type that [`js_to_boxed`] originally boxed, so the `unwrap`
 /// is safe — a type mismatch here would indicate a bug in the type-descriptor pipeline.
-pub fn boxed_to_arg<'a>(desc: &FfiTypeDesc, boxed: &'a dyn Any) -> Arg<'a> {
+pub fn boxed_to_arg<'a>(desc: &FfiTypeDesc, boxed: &'a dyn Any) -> Result<Arg<'a>> {
     match desc {
-        FfiTypeDesc::UInt8 => arg(boxed.downcast_ref::<u8>().unwrap()),
-        FfiTypeDesc::Int8 => arg(boxed.downcast_ref::<i8>().unwrap()),
-        FfiTypeDesc::UInt16 => arg(boxed.downcast_ref::<u16>().unwrap()),
-        FfiTypeDesc::Int16 => arg(boxed.downcast_ref::<i16>().unwrap()),
-        FfiTypeDesc::UInt32 => arg(boxed.downcast_ref::<u32>().unwrap()),
-        FfiTypeDesc::Int32 => arg(boxed.downcast_ref::<i32>().unwrap()),
-        FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => arg(boxed.downcast_ref::<u64>().unwrap()),
-        FfiTypeDesc::Int64 => arg(boxed.downcast_ref::<i64>().unwrap()),
-        FfiTypeDesc::Float32 => arg(boxed.downcast_ref::<f32>().unwrap()),
-        FfiTypeDesc::Float64 => arg(boxed.downcast_ref::<f64>().unwrap()),
+        FfiTypeDesc::UInt8 => Ok(arg(boxed.downcast_ref::<u8>().unwrap())),
+        FfiTypeDesc::Int8 => Ok(arg(boxed.downcast_ref::<i8>().unwrap())),
+        FfiTypeDesc::UInt16 => Ok(arg(boxed.downcast_ref::<u16>().unwrap())),
+        FfiTypeDesc::Int16 => Ok(arg(boxed.downcast_ref::<i16>().unwrap())),
+        FfiTypeDesc::UInt32 => Ok(arg(boxed.downcast_ref::<u32>().unwrap())),
+        FfiTypeDesc::Int32 => Ok(arg(boxed.downcast_ref::<i32>().unwrap())),
+        FfiTypeDesc::UInt64 | FfiTypeDesc::Handle => Ok(arg(boxed.downcast_ref::<u64>().unwrap())),
+        FfiTypeDesc::Int64 => Ok(arg(boxed.downcast_ref::<i64>().unwrap())),
+        FfiTypeDesc::Float32 => Ok(arg(boxed.downcast_ref::<f32>().unwrap())),
+        FfiTypeDesc::Float64 => Ok(arg(boxed.downcast_ref::<f64>().unwrap())),
         FfiTypeDesc::RustCallStatus => {
-            // The boxed value is a *mut RustCallStatusC
-            arg(boxed.downcast_ref::<*mut u8>().unwrap())
+            // The boxed value is a *mut RustCallStatusC.
+            Ok(arg(boxed.downcast_ref::<*mut u8>().unwrap()))
         }
-        _ => panic!("Unsupported argument type for boxed_to_arg: {:?}", desc),
+        _ => Err(napi::Error::from_reason(format!(
+            "Unsupported argument type for boxed_to_arg: {:?}",
+            desc
+        ))),
     }
 }
 

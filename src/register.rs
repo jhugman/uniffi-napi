@@ -432,7 +432,7 @@ fn call_ffi_function(
                 struct_ptr_idx += 1;
             }
             _ => {
-                ffi_args.push(marshal::boxed_to_arg(desc, boxed_args[i].as_ref()));
+                ffi_args.push(marshal::boxed_to_arg(desc, boxed_args[i].as_ref())?);
             }
         }
     }

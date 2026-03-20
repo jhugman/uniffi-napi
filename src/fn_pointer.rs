@@ -343,7 +343,7 @@ pub fn create_fn_pointer_wrapper(
                 }
                 _ => {
                     let boxed = &*boxed_values[scalar_idx];
-                    ffi_args.push(marshal::boxed_to_arg(desc, boxed));
+                    ffi_args.push(marshal::boxed_to_arg(desc, boxed)?);
                     scalar_idx += 1;
                 }
             }
