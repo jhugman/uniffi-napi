@@ -46,6 +46,7 @@
 //! callback's lifetime statically. This is a deliberate trade-off: a small, bounded
 //! amount of memory is leaked per callback registration in exchange for soundness.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
@@ -276,7 +277,7 @@ fn call_ffi_function(
     let mut struct_ptrs: Vec<*const c_void> = Vec::new();
 
     // Marshal JS arguments to boxed Rust values
-    let mut boxed_args: Vec<Box<dyn std::any::Any>> = Vec::with_capacity(declared_arg_count);
+    let mut boxed_args: Vec<Box<dyn Any>> = Vec::with_capacity(declared_arg_count);
     for (i, desc) in func.arg_types.iter().enumerate() {
         let js_val: JsUnknown = ctx.get(i)?;
         match desc {
@@ -293,9 +294,8 @@ fn call_ffi_function(
             }
             FfiTypeDesc::Reference(inner) if matches!(inner.as_ref(), FfiTypeDesc::Struct(_)) => {
                 // Reference(Struct("Name")) — build a VTable struct from a JS object
-                let struct_name = match inner.as_ref() {
-                    FfiTypeDesc::Struct(name) => name,
-                    _ => unreachable!(),
+                let FfiTypeDesc::Struct(struct_name) = inner.as_ref() else {
+                    unreachable!("guard ensures inner is Struct");
                 };
                 let struct_def = defs.structs.get(struct_name).ok_or_else(|| {
                     napi::Error::from_reason(format!("Unknown struct: {struct_name}"))
@@ -456,8 +456,7 @@ fn call_ffi_function(
 
     // Call the function
     let code_ptr = CodePtr::from_ptr(func.symbol_ptr as *mut c_void);
-    let ret_val: Box<dyn std::any::Any> =
-        call_with_ret_type(&func.cif, code_ptr, &ffi_args, &func.ret_type)?;
+    let ret_val: Box<dyn Any> = call_with_ret_type(&func.cif, code_ptr, &ffi_args, &func.ret_type)?;
 
     // Write back RustCallStatus
     if func.has_rust_call_status {
@@ -514,7 +513,7 @@ fn call_with_ret_type(
     code_ptr: CodePtr,
     args: &[Arg],
     ret_type: &FfiTypeDesc,
-) -> Result<Box<dyn std::any::Any>> {
+) -> Result<Box<dyn Any>> {
     // SAFETY: The entire body is one `unsafe` block because `cif.call` is an unsafe
     // function. The safety contract requires:
     //

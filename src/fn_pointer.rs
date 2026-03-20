@@ -30,6 +30,7 @@
 //! When marshalling, we recursively handle nested `Struct` fields by calling
 //! `marshal_js_struct_to_bytes` for each nested struct field.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
@@ -279,7 +280,7 @@ pub fn create_fn_pointer_wrapper(
 
         // We need to keep boxed values and struct buffers alive until after cif.call().
         // boxed_values owns the heap-allocated scalars; struct_buffers owns the byte arrays.
-        let mut boxed_values: Vec<Box<dyn std::any::Any>> = Vec::with_capacity(arg_types.len());
+        let mut boxed_values: Vec<Box<dyn Any>> = Vec::with_capacity(arg_types.len());
         let mut struct_buffers: Vec<Vec<u8>> = Vec::new();
         let mut rb_values: Vec<RustBufferC> = Vec::new();
 
