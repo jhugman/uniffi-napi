@@ -355,11 +355,7 @@ pub unsafe fn read_raw_arg(
 
             Some(RawCallbackArg::RustBuffer(data))
         }
-        FfiTypeDesc::Callback(_) => {
-            let fn_ptr = *(arg_ptr as *const *const c_void);
-            Some(RawCallbackArg::Pointer(fn_ptr as usize))
-        }
-        FfiTypeDesc::MutReference(_) | FfiTypeDesc::Reference(_) => {
+        FfiTypeDesc::Callback(_) | FfiTypeDesc::MutReference(_) | FfiTypeDesc::Reference(_) => {
             let ptr = *(arg_ptr as *const *const c_void);
             Some(RawCallbackArg::Pointer(ptr as usize))
         }
@@ -582,11 +578,7 @@ pub unsafe fn c_arg_to_js(
             // live napi_value just created above.
             Ok(napi::JsUnknown::from_raw(raw_env, typedarray)?)
         }
-        FfiTypeDesc::Callback(_) => {
-            let fn_ptr = *(arg_ptr as *const *const c_void);
-            Ok(env.create_bigint_from_u64(fn_ptr as u64)?.into_unknown()?)
-        }
-        FfiTypeDesc::MutReference(_) | FfiTypeDesc::Reference(_) => {
+        FfiTypeDesc::Callback(_) | FfiTypeDesc::MutReference(_) | FfiTypeDesc::Reference(_) => {
             let ptr = *(arg_ptr as *const *const c_void);
             Ok(env.create_bigint_from_u64(ptr as u64)?.into_unknown()?)
         }
