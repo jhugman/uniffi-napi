@@ -602,8 +602,7 @@ pub unsafe fn c_arg_to_js(
             Ok(env.create_bigint_from_u64(ptr as u64)?.into_unknown()?)
         }
         _ => Err(napi::Error::from_reason(format!(
-            "Unsupported callback arg type: {:?}",
-            desc
+            "Unsupported callback arg type: {desc:?}"
         ))),
     }
 }

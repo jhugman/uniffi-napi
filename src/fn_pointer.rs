@@ -222,8 +222,7 @@ pub fn marshal_js_struct_to_bytes(
             }
             other => {
                 return Err(napi::Error::from_reason(format!(
-                    "Unsupported struct field type: {:?}",
-                    other
+                    "Unsupported struct field type: {other:?}"
                 )));
             }
         }
@@ -357,8 +356,7 @@ pub fn create_fn_pointer_wrapper(
                 ctx.env.get_undefined().map(|v| v.into_unknown())
             }
             _ => Err(napi::Error::from_reason(format!(
-                "Non-void return types for fn_pointer_wrapper not yet supported: {:?}",
-                ret_type
+                "Non-void return types for fn_pointer_wrapper not yet supported: {ret_type:?}"
             ))),
         }
     })?;

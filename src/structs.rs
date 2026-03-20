@@ -675,7 +675,7 @@ unsafe fn write_return_value(
         }
         _ => {
             #[cfg(debug_assertions)]
-            eprintln!("write_return_value: unsupported return type {:?}", ret_type);
+            eprintln!("write_return_value: unsupported return type {ret_type:?}");
         }
     }
 }
@@ -779,10 +779,7 @@ unsafe fn write_raw_return_value(
         }
         _ => {
             #[cfg(debug_assertions)]
-            eprintln!(
-                "write_raw_return_value: unsupported type pair {:?} / {:?}",
-                ret_type, raw_ret
-            );
+            eprintln!("write_raw_return_value: unsupported type pair {ret_type:?} / {raw_ret:?}");
         }
     }
 }
@@ -1019,8 +1016,8 @@ pub fn build_vtable_struct(
             FfiTypeDesc::Callback(cb_name) => {
                 let cb_def = callback_defs.get(cb_name).ok_or_else(|| {
                     napi::Error::from_reason(format!(
-                        "Unknown callback '{}' for struct field '{}'",
-                        cb_name, field.name
+                        "Unknown callback '{cb_name}' for struct field '{}'",
+                        field.name
                     ))
                 })?;
 

@@ -111,8 +111,7 @@ pub fn js_to_boxed(env: &Env, desc: &FfiTypeDesc, js_val: JsUnknown) -> Result<B
             Ok(Box::new(v))
         }
         _ => Err(napi::Error::from_reason(format!(
-            "Unsupported argument type for js_to_boxed: {:?}",
-            desc
+            "Unsupported argument type for js_to_boxed: {desc:?}"
         ))),
     }
 }
@@ -140,8 +139,7 @@ pub fn boxed_to_arg<'a>(desc: &FfiTypeDesc, boxed: &'a dyn Any) -> Result<Arg<'a
             Ok(arg(boxed.downcast_ref::<*mut u8>().unwrap()))
         }
         _ => Err(napi::Error::from_reason(format!(
-            "Unsupported argument type for boxed_to_arg: {:?}",
-            desc
+            "Unsupported argument type for boxed_to_arg: {desc:?}"
         ))),
     }
 }
@@ -197,8 +195,7 @@ pub fn ret_to_js(env: &Env, desc: &FfiTypeDesc, boxed: &dyn Any) -> Result<JsUnk
             Ok(env.create_double(*v)?.into_unknown())
         }
         _ => Err(napi::Error::from_reason(format!(
-            "Unsupported return type for ret_to_js: {:?}",
-            desc
+            "Unsupported return type for ret_to_js: {desc:?}"
         ))),
     }
 }

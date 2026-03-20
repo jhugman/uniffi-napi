@@ -298,7 +298,7 @@ fn call_ffi_function(
                     _ => unreachable!(),
                 };
                 let struct_def = defs.structs.get(struct_name).ok_or_else(|| {
-                    napi::Error::from_reason(format!("Unknown struct: {}", struct_name))
+                    napi::Error::from_reason(format!("Unknown struct: {struct_name}"))
                 })?;
 
                 let js_obj = unsafe { JsObject::from_raw(env.raw(), js_val.raw())? };
@@ -317,7 +317,7 @@ fn call_ffi_function(
             }
             FfiTypeDesc::Callback(cb_name) => {
                 let cb_def = defs.callbacks.get(cb_name).ok_or_else(|| {
-                    napi::Error::from_reason(format!("Unknown callback: {}", cb_name))
+                    napi::Error::from_reason(format!("Unknown callback: {cb_name}"))
                 })?;
 
                 // SAFETY: Same rationale as the JsObject::from_raw above — env and js_val
@@ -335,8 +335,7 @@ fn call_ffi_function(
                 };
                 if ref_status != napi::sys::Status::napi_ok {
                     return Err(napi::Error::from_reason(format!(
-                        "Failed to create reference for callback '{}'",
-                        cb_name
+                        "Failed to create reference for callback '{cb_name}'"
                     )));
                 }
 
@@ -580,8 +579,7 @@ fn call_with_ret_type(
                 Ok(Box::new(r))
             }
             _ => Err(napi::Error::from_reason(format!(
-                "Unsupported return type: {:?}",
-                ret_type
+                "Unsupported return type: {ret_type:?}"
             ))),
         }
     }
