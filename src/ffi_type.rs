@@ -17,7 +17,6 @@
 //! `FfiTypeDesc` in a `Box`, reflecting the pointer-to-T pattern that UniFFI uses
 //! for pass-by-reference structs and mutable out-parameters.
 
-use napi::bindgen_prelude::*;
 use napi::{JsObject, Result};
 
 /// The abstract type descriptor parsed from JS-provided definitions.
@@ -55,8 +54,7 @@ impl FfiTypeDesc {
     ///
     /// Recursively descends into `Reference` and `MutReference` wrappers,
     /// building the boxed inner type from the `inner` property of the JS object.
-    #[allow(clippy::only_used_in_recursion)]
-    pub fn from_js_object(env: &Env, obj: &JsObject) -> Result<Self> {
+    pub fn from_js_object(obj: &JsObject) -> Result<Self> {
         let tag: String = obj.get_named_property::<String>("tag")?;
         match tag.as_str() {
             "UInt8" => Ok(Self::UInt8),
@@ -85,15 +83,11 @@ impl FfiTypeDesc {
             }
             "Reference" => {
                 let inner: JsObject = obj.get_named_property("inner")?;
-                Ok(Self::Reference(Box::new(Self::from_js_object(
-                    env, &inner,
-                )?)))
+                Ok(Self::Reference(Box::new(Self::from_js_object(&inner)?)))
             }
             "MutReference" => {
                 let inner: JsObject = obj.get_named_property("inner")?;
-                Ok(Self::MutReference(Box::new(Self::from_js_object(
-                    env, &inner,
-                )?)))
+                Ok(Self::MutReference(Box::new(Self::from_js_object(&inner)?)))
             }
             other => Err(napi::Error::from_reason(format!(
                 "Unknown FfiType tag: {other}"

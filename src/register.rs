@@ -125,11 +125,11 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
     let rb_ops = resolve_rustbuffer_symbols(handle, &definitions)?;
 
     // Parse callback definitions if present
-    let callback_defs = parse_callbacks(&env, &definitions)?;
+    let callback_defs = parse_callbacks(&definitions)?;
     let callback_defs = Rc::new(callback_defs);
 
     // Parse struct definitions if present
-    let struct_defs = structs::parse_structs(&env, &definitions)?;
+    let struct_defs = structs::parse_structs(&definitions)?;
     let struct_defs = Rc::new(struct_defs);
 
     let functions: JsObject = definitions.get_named_property("functions")?;
@@ -152,12 +152,12 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
         let mut arg_types = Vec::with_capacity(args_len as usize);
         for j in 0..args_len {
             let arg_obj: JsObject = args_arr.get_element(j)?;
-            arg_types.push(FfiTypeDesc::from_js_object(&env, &arg_obj)?);
+            arg_types.push(FfiTypeDesc::from_js_object(&arg_obj)?);
         }
 
         // Parse return type
         let ret_obj: JsObject = func_def.get_named_property("ret")?;
-        let ret_type = FfiTypeDesc::from_js_object(&env, &ret_obj)?;
+        let ret_type = FfiTypeDesc::from_js_object(&ret_obj)?;
 
         // Check hasRustCallStatus
         let has_rust_call_status: bool = func_def.get_named_property("hasRustCallStatus")?;
@@ -199,7 +199,7 @@ pub fn register(env: Env, handle: &LibraryHandle, definitions: JsObject) -> Resu
 }
 
 /// Parse the `callbacks` map from JS definitions into a HashMap of CallbackDefs.
-fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, CallbackDef>> {
+fn parse_callbacks(definitions: &JsObject) -> Result<HashMap<String, CallbackDef>> {
     let mut map = HashMap::new();
 
     // Callbacks is optional.
@@ -226,12 +226,12 @@ fn parse_callbacks(env: &Env, definitions: &JsObject) -> Result<HashMap<String, 
         let mut args = Vec::with_capacity(args_len as usize);
         for j in 0..args_len {
             let arg_obj: JsObject = args_arr.get_element(j)?;
-            args.push(FfiTypeDesc::from_js_object(env, &arg_obj)?);
+            args.push(FfiTypeDesc::from_js_object(&arg_obj)?);
         }
 
         // Parse ret
         let ret_obj: JsObject = cb_def.get_named_property("ret")?;
-        let ret = FfiTypeDesc::from_js_object(env, &ret_obj)?;
+        let ret = FfiTypeDesc::from_js_object(&ret_obj)?;
 
         // Parse hasRustCallStatus
         let has_rust_call_status: bool = cb_def.get_named_property("hasRustCallStatus")?;

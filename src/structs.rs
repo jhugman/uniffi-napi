@@ -110,7 +110,7 @@ pub struct StructDef {
 
 /// Parse the `structs` map from JS definitions.
 /// Each struct is an array of { name, type } objects.
-pub fn parse_structs(env: &Env, definitions: &JsObject) -> Result<HashMap<String, StructDef>> {
+pub fn parse_structs(definitions: &JsObject) -> Result<HashMap<String, StructDef>> {
     let mut map = HashMap::new();
 
     let has_structs: bool = definitions.has_named_property("structs")?;
@@ -136,7 +136,7 @@ pub fn parse_structs(env: &Env, definitions: &JsObject) -> Result<HashMap<String
             let field_obj: JsObject = fields_arr.get_element(j)?;
             let field_name: String = field_obj.get_named_property("name")?;
             let type_obj: JsObject = field_obj.get_named_property("type")?;
-            let field_type = FfiTypeDesc::from_js_object(env, &type_obj)?;
+            let field_type = FfiTypeDesc::from_js_object(&type_obj)?;
             fields.push(StructField {
                 name: field_name,
                 field_type,
