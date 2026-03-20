@@ -40,7 +40,10 @@ use crate::structs::StructDef;
 ///
 /// - Returns an error on `ForeignBytes`, which has no CIF representation.
 /// - Returns an error on `Struct(name)` when `name` is not found in `struct_defs`.
-pub fn ffi_type_for(desc: &FfiTypeDesc, struct_defs: &HashMap<String, StructDef>) -> napi::Result<Type> {
+pub fn ffi_type_for(
+    desc: &FfiTypeDesc,
+    struct_defs: &HashMap<String, StructDef>,
+) -> napi::Result<Type> {
     match desc {
         FfiTypeDesc::UInt8 => Ok(Type::u8()),
         FfiTypeDesc::Int8 => Ok(Type::i8()),
@@ -58,10 +61,14 @@ pub fn ffi_type_for(desc: &FfiTypeDesc, struct_defs: &HashMap<String, StructDef>
         | FfiTypeDesc::Callback(_) => Ok(Type::pointer()),
         FfiTypeDesc::Void => Ok(Type::void()),
         FfiTypeDesc::RustCallStatus => Ok(Type::pointer()), // always passed as &mut
-        FfiTypeDesc::RustBuffer => Ok(Type::structure(vec![Type::u64(), Type::u64(), Type::pointer()])),
-        FfiTypeDesc::ForeignBytes => {
-            Err(napi::Error::from_reason("ForeignBytes has no CIF representation; it is not used in UniFFI function signatures"))
-        }
+        FfiTypeDesc::RustBuffer => Ok(Type::structure(vec![
+            Type::u64(),
+            Type::u64(),
+            Type::pointer(),
+        ])),
+        FfiTypeDesc::ForeignBytes => Err(napi::Error::from_reason(
+            "ForeignBytes has no CIF representation; it is not used in UniFFI function signatures",
+        )),
         FfiTypeDesc::Struct(name) => {
             let struct_def = struct_defs.get(name).ok_or_else(|| {
                 napi::Error::from_reason(format!("Unknown struct type: '{name}'. Ensure it is defined in the structs section of register()."))

@@ -283,7 +283,11 @@ fn call_ffi_function(
             FfiTypeDesc::RustBuffer => {
                 // Convert Uint8Array -> RustBufferC via rustbuffer_from_bytes
                 let rust_buffer = unsafe {
-                    napi_utils::js_uint8array_to_rust_buffer(env.raw(), js_val, rb_ops.from_bytes_ptr)?
+                    napi_utils::js_uint8array_to_rust_buffer(
+                        env.raw(),
+                        js_val,
+                        rb_ops.from_bytes_ptr,
+                    )?
                 };
                 boxed_args.push(Box::new(rust_buffer));
             }
